@@ -26,12 +26,14 @@ class QSysMCP3Server {
     );
     
     this.setupHandlers();
-    this.server.connect(new StdioServerTransport());
     
-    // Auto-connect if configured
-    if (this.config.host && this.config.autoConnect !== false) {
-      setTimeout(() => this.connect(this.config), 100);
-    }
+    // Connect to stdio transport
+    this.server.connect(new StdioServerTransport()).then(() => {
+      // Auto-connect if configured
+      if (this.config.host && this.config.autoConnect !== false) {
+        this.connect(this.config).catch(console.error);
+      }
+    });
   }
 
   loadConfig() {
@@ -154,7 +156,7 @@ class QSysMCP3Server {
     return this.success(status);
   }
 
-  async toolDiscover({ component, includeControls = true } = {}) {
+  async toolDiscover({ component, includeControls = false } = {}) {
     if (!this.qrwc) return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
     
     // Check cache (1 second TTL)
@@ -370,7 +372,7 @@ class QSysMCP3Server {
               includeControls: { 
                 type: 'boolean', 
                 description: 'Include control details for each component', 
-                default: true 
+                default: false 
               }
             }
           }
@@ -437,4 +439,4 @@ class QSysMCP3Server {
 }
 
 // Start server
-new QSysMCP3Server();
+const server = new QSysMCP3Server();
