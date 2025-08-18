@@ -2,6 +2,10 @@
 
 Ultra-minimal MCP server for Q-SYS control. ~400 lines, 3 dependencies, 5 tools.
 
+<a href="https://glama.ai/mcp/servers/@charliem716/MCP3.0">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@charliem716/MCP3.0/badge" alt="Q-SYS Server MCP server" />
+</a>
+
 ## Quick Start
 
 ```bash
