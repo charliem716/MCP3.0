@@ -1,0 +1,24 @@
+{
+  "name": "qsys-mcp3",
+  "version": "3.0.0",
+  "description": "Ultra-minimal MCP server for Q-SYS control",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "QSYS_MCP_DEBUG=true node index.js"
+  },
+  "keywords": [
+    "qsys",
+    "mcp",
+    "modelcontextprotocol",
+    "av",
+    "audio"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@q-sys/qrwc": "^0.4.1-beta",
+    "ws": "^8.0.0"
+  }
+}
