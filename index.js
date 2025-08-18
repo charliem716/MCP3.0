@@ -52,12 +52,20 @@ class QSysMCP3Server {
     };
     
     // Environment overrides
-    ['HOST', 'PORT', 'AUTO_CONNECT', 'POLLING_INTERVAL'].forEach(key => {
-      const env = process.env[`QSYS_${key}`];
-      if (env) config[key.toLowerCase().replace('_', '')] = 
-        key === 'PORT' || key === 'POLLING_INTERVAL' ? parseInt(env) :
-        key === 'AUTO_CONNECT' ? env === 'true' : env;
-    });
+    if (process.env.QSYS_HOST) config.host = process.env.QSYS_HOST;
+    if (process.env.QSYS_PORT) config.port = parseInt(process.env.QSYS_PORT);
+    if (process.env.QSYS_AUTO_CONNECT) config.autoConnect = process.env.QSYS_AUTO_CONNECT === 'true';
+    if (process.env.QSYS_POLLING_INTERVAL) config.pollingInterval = parseInt(process.env.QSYS_POLLING_INTERVAL);
+    
+    // Debug logging
+    if (process.env.QSYS_MCP_DEBUG === 'true') {
+      console.error('MCP3.0 Config:', JSON.stringify(config, null, 2));
+      console.error('Environment:', {
+        QSYS_HOST: process.env.QSYS_HOST,
+        QSYS_PORT: process.env.QSYS_PORT,
+        QSYS_AUTO_CONNECT: process.env.QSYS_AUTO_CONNECT
+      });
+    }
     
     return config;
   }

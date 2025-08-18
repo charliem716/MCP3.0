@@ -141,7 +141,8 @@ Use this for dedicated single-system setups:
       "env": {
         "QSYS_HOST": "192.168.50.150",
         "QSYS_PORT": "443",
-        "QSYS_AUTO_CONNECT": "true"
+        "QSYS_AUTO_CONNECT": "true",
+        "QSYS_MCP_DEBUG": "false"
       }
     }
   }
