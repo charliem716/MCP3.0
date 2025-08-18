@@ -112,6 +112,26 @@ Add to your Claude Desktop config file:
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
+### Option 1: Minimal Configuration (Manual Connect)
+Use this for flexibility with multiple Q-SYS systems:
+
+```json
+{
+  "mcpServers": {
+    "qsys-mcp3": {
+      "command": "node",
+      "args": ["/absolute/path/to/MCP3.0/index.js"]
+    }
+  }
+}
+```
+
+With this config, you'll need to connect manually in Claude:
+> "Connect to Q-SYS Core at 192.168.50.150"
+
+### Option 2: Auto-Connect Configuration
+Use this for dedicated single-system setups:
+
 ```json
 {
   "mcpServers": {
