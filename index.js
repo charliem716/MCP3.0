@@ -61,34 +61,25 @@ class QSysMCP3Server {
   }
 
   async connect({ host, port = 443, secure = true, pollingInterval = 350 }) {
-    // Clean up existing connection
-    if (this.qrwc) {
-      this.qrwc.close();
-      this.qrwc = null;
-    }
+    if (this.qrwc) this.qrwc.close();
     
-    this.state = { ...this.state, connection: 'connecting', host };
+    this.state = { connection: 'connecting', host, reconnectAttempt: 0 };
     this.cache = { discovery: null, timestamp: 0 };
     
-    const url = `${secure ? 'wss' : 'ws'}://${host}:${port}/qrc-public-api/v0`;
-    const socket = new WebSocket(url, { rejectUnauthorized: false });
-    
     try {
-      this.qrwc = await Promise.race([
-        Qrwc.createQrwc({ socket, pollingInterval: Math.max(34, pollingInterval), timeout: 5000 }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 5000))
-      ]);
+      const socket = new WebSocket(
+        `${secure ? 'wss' : 'ws'}://${host}:${port}/qrc-public-api/v0`,
+        { rejectUnauthorized: false }
+      );
       
-      this.state = { 
-        connection: 'connected', 
-        host, 
-        reconnectAttempt: 0, 
-        connectedAt: new Date() 
-      };
+      await new Promise((r, e) => (socket.once('open', r), socket.once('error', e)));
+      
+      this.qrwc = await Qrwc.createQrwc({ socket, pollingInterval: Math.max(34, pollingInterval) });
+      this.state.connection = 'connected';
+      this.state.connectedAt = new Date();
       
       this.qrwc.on('disconnected', () => this.handleDisconnect());
       
-      // Save successful connection
       try {
         fs.mkdirSync(CONFIG_DIR, { recursive: true });
         fs.writeFileSync(LAST_CONNECTION_FILE, JSON.stringify({ host, port, secure, pollingInterval }, null, 2));
@@ -299,11 +290,9 @@ class QSysMCP3Server {
 
   // Helpers
   parsePath(path) {
-    const parts = path.split('.');
-    if (parts.length !== 2) {
-      throw new Error(`Invalid path format: "${path}". Use "Component.control"`);
-    }
-    return parts;
+    const dot = path.indexOf('.');
+    if (dot === -1) throw new Error(`Invalid path: "${path}"`);
+    return [path.slice(0, dot), path.slice(dot + 1)];
   }
 
   getHelpfulError(path, componentName) {
