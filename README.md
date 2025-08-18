@@ -106,23 +106,30 @@ These patterns require `force: true` to modify:
 - Connection time: <1 second
 - Batch operations: Parallel execution
 
-## MCP Client Configuration
+## Claude Desktop Configuration
 
-Add to your MCP client config:
+Add to your Claude Desktop config file:
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
-    "qsys": {
+    "qsys-mcp3": {
       "command": "node",
-      "args": ["/path/to/qsys-mcp3/index.js"],
+      "args": ["/absolute/path/to/MCP3.0/index.js"],
       "env": {
-        "QSYS_HOST": "192.168.1.100"
+        "QSYS_HOST": "192.168.50.150",
+        "QSYS_PORT": "443",
+        "QSYS_AUTO_CONNECT": "true"
       }
     }
   }
 }
 ```
+
+Replace `/absolute/path/to/MCP3.0/index.js` with the actual path to your index.js file.
+Replace `192.168.50.150` with your Q-SYS Core IP address.
 
 ## Testing
 
