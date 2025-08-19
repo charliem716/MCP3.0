@@ -1,6 +1,6 @@
 # Q-SYS MCP3.0 Server
 
-Ultra-minimal MCP server for Q-SYS control. ~400 lines, 3 dependencies, 5 tools.
+High-performance MCP server for Q-SYS control with real-time monitoring. ~700 lines, 3 dependencies, 6 tools.
 
 ## Quick Start
 
@@ -32,35 +32,37 @@ The server saves successful connections to `~/.qsys-mcp/last-connection.json` an
 ## Tools
 
 ### qsys_connect
-Connect to Q-SYS Core with auto-reconnection.
+Connect to Q-SYS Core with auto-reconnection and optional component filtering.
 ```json
 {
   "host": "192.168.1.100",
   "port": 443,
   "secure": true,
-  "pollingInterval": 350
+  "pollingInterval": 350,
+  "filter": "^Audio"         // Optional: regex to filter components
 }
 ```
 
 ### qsys_discover
-List components and their controls.
+List components and controls with enhanced metadata.
 ```json
 {
   "component": "Gain.*",     // Optional regex filter
-  "includeControls": true    // Include control details
+  "includeControls": true    // Include control details with metadata
 }
 ```
 
 ### qsys_get
-Read control values.
+Read control values with enhanced metadata.
 ```json
 {
   "controls": ["Gain_1.gain", "Gain_1.mute"]
 }
+// Returns: value, string, position, bool, direction, choices, min, max
 ```
 
 ### qsys_set
-Update control values with protection.
+Update control values with validation.
 ```json
 {
   "controls": [
@@ -81,6 +83,16 @@ Get connection and system status.
 }
 ```
 
+### qsys_monitor
+Real-time control monitoring with event buffer.
+```json
+{
+  "action": "start",         // start, read, or stop
+  "id": "monitor_1",         // Unique monitor ID
+  "controls": ["Gain_1.gain", "Gain_1.mute"]
+}
+```
+
 ## Protected Controls
 
 These patterns require `force: true` to modify:
@@ -91,8 +103,11 @@ These patterns require `force: true` to modify:
 
 ## Features
 
+- **Real-time monitoring**: Subscribe to control changes with event buffer
+- **Component filtering**: Reduce memory usage by loading only needed components
+- **Enhanced metadata**: Control direction, choices, min/max values included
 - **Auto-reconnection**: Exponential backoff (1s, 2s, 4s, 8s, 16s)
-- **Global cache**: 1-second discovery cache, clears on reconnect
+- **Discovery cache**: 1-second cache for improved performance
 - **Parallel operations**: Batch updates execute simultaneously
 - **Type validation**: Enforces correct types for Boolean, Float, Integer
 - **Range validation**: Respects ValueMin/ValueMax limits
@@ -101,10 +116,11 @@ These patterns require `force: true` to modify:
 ## Performance
 
 - Tool response: <10ms overhead
-- Memory usage: <50MB
+- Memory usage: <50MB (reduced with filtering)
 - Startup time: <500ms
 - Connection time: <1 second
-- Batch operations: Parallel execution
+- Monitor events: 100 event circular buffer
+- Batch operations: Parallel execution (100 get, 50 set)
 
 ## Claude Desktop Configuration
 
@@ -154,11 +170,11 @@ Replace `192.168.50.150` with your Q-SYS Core IP address.
 
 ## Testing
 
-Manual testing checklist:
-1. Connect to Q-SYS Core
-2. Verify auto-reconnection (disconnect/reconnect network)
-3. Discover components
-4. Get/set control values
+Use `test-prompts-v2.md` for comprehensive testing, or quick checklist:
+1. Connect with/without component filter
+2. Verify auto-reconnection
+3. Test real-time monitoring (start/read/stop)
+4. Validate enhanced metadata (direction, choices, min/max)
 5. Test protected controls
 6. Verify batch operations
 7. Monitor memory usage
