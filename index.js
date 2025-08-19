@@ -8,10 +8,15 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
+
+
 const CONFIG_DIR = path.join(os.homedir(), '.qsys-mcp');
 const LAST_CONNECTION_FILE = path.join(CONFIG_DIR, 'last-connection.json');
 const PROTECTED_PATTERNS = [/^Master\./i, /^Emergency\./i, /\.power$/i, /^SystemMute/i];
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
+const RESPONSE_DIR = path.join(os.tmpdir(), 'qsys-mcp-responses');
+const MAX_STDIO_SIZE = 100 * 1024; // 100KB threshold
+const FILE_CLEANUP_AGE = 15 * 60 * 1000; // Clean files older than 15 minutes
 
 class QSysMCP3Server {
   constructor() {
@@ -26,6 +31,19 @@ class QSysMCP3Server {
     );
     
     this.setupHandlers();
+    
+    // Ensure response directory exists
+    try {
+      fs.mkdirSync(RESPONSE_DIR, { recursive: true });
+      this.cleanupOldResponses(); // Clean on startup
+    } catch (error) {
+      console.error('Warning: Could not create response directory:', error);
+    }
+    
+    // Periodic cleanup every 5 minutes
+    setInterval(() => {
+      this.cleanupOldResponses();
+    }, 5 * 60 * 1000);
     
     // Connect to stdio transport
     this.server.connect(new StdioServerTransport()).then(() => {
@@ -282,6 +300,27 @@ class QSysMCP3Server {
         
         // Update
         const newState = await control.update(value);
+        
+        // Verify the value actually changed to what we requested (unless it's a trigger control)
+        // For boolean controls, compare the boolean value
+        // For numeric controls, compare the numeric value
+        if (control.state.Type !== 'Trigger') {
+          const requestMatches = (control.state.Type === 'Boolean') 
+            ? newState.Bool === value
+            : Math.abs(newState.Value - value) < 0.001; // Small tolerance for float comparison
+            
+          if (!requestMatches) {
+            return {
+              control: path,
+              error: 'Control rejected - value not set as requested',
+              suggestion: 'Control may be read-only, locked, or require permissions',
+              requested: value,
+              actual: newState.Value,
+              confirmed: false
+            };
+          }
+        }
+        
         return {
           control: path,
           value: newState.Value,
@@ -318,7 +357,60 @@ class QSysMCP3Server {
   }
 
   success(data) {
-    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    const json = JSON.stringify(data);
+    
+    // Check if response exceeds safe stdio size
+    if (json.length > MAX_STDIO_SIZE) {
+      return this.largeResponse(json, data);
+    }
+    
+    // Normal response for small data
+    return { content: [{ type: 'text', text: json }] };
+  }
+  
+  largeResponse(json, originalData) {
+    try {
+      // Generate unique filename with timestamp
+      const timestamp = Date.now();
+      const filename = `response-${timestamp}-${Math.random().toString(36).substr(2, 9)}.json`;
+      const filepath = path.join(RESPONSE_DIR, filename);
+      
+      // Write to file atomically (write to temp, then rename)
+      const tempPath = filepath + '.tmp';
+      fs.writeFileSync(tempPath, json);
+      fs.renameSync(tempPath, filepath);
+      
+      // Return file reference with metadata
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            largeResponse: true,
+            file: filepath,
+            size: json.length,
+            sizeHuman: this.formatBytes(json.length),
+            created: new Date().toISOString(),
+            expiresIn: '15 minutes',
+            summary: this.generateSummary(originalData)
+          })
+        }]
+      };
+    } catch (error) {
+      // Fallback: Return truncated data with error
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: 'Could not write large response to file',
+            details: error.message,
+            truncated: true,
+            data: Array.isArray(originalData) 
+              ? originalData.slice(0, 20) 
+              : { error: 'Response too large' }
+          })
+        }]
+      };
+    }
   }
 
   error(message, suggestion) {
@@ -326,6 +418,58 @@ class QSysMCP3Server {
       content: [{ type: 'text', text: JSON.stringify({ error: message, suggestion }, null, 2) }],
       isError: true
     };
+  }
+  
+  formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' bytes';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+  
+  generateSummary(data) {
+    if (Array.isArray(data)) {
+      return {
+        type: 'array',
+        length: data.length,
+        sample: data.slice(0, 3)
+      };
+    }
+    if (typeof data === 'object' && data !== null) {
+      const keys = Object.keys(data);
+      return {
+        type: 'object',
+        keys: keys.slice(0, 5),
+        totalKeys: keys.length
+      };
+    }
+    return { type: typeof data };
+  }
+  
+  cleanupOldResponses() {
+    try {
+      const now = Date.now();
+      const files = fs.readdirSync(RESPONSE_DIR);
+      
+      files.forEach(file => {
+        if (file.startsWith('response-') && file.endsWith('.json')) {
+          const filepath = path.join(RESPONSE_DIR, file);
+          const stats = fs.statSync(filepath);
+          
+          // Delete if older than cleanup age
+          if (now - stats.mtimeMs > FILE_CLEANUP_AGE) {
+            fs.unlinkSync(filepath);
+            if (process.env.QSYS_MCP_DEBUG === 'true') {
+              console.error(`Cleaned up old response file: ${file}`);
+            }
+          }
+        }
+      });
+    } catch (error) {
+      // Non-critical, just log if debug
+      if (process.env.QSYS_MCP_DEBUG === 'true') {
+        console.error('Cleanup error:', error);
+      }
+    }
   }
 
   setupHandlers() {
@@ -448,3 +592,16 @@ class QSysMCP3Server {
 
 // Start server
 const server = new QSysMCP3Server();
+
+// Cleanup on exit
+process.on('exit', () => {
+  try {
+    // Clean all response files on exit
+    const files = fs.readdirSync(RESPONSE_DIR);
+    files.forEach(file => {
+      if (file.startsWith('response-')) {
+        fs.unlinkSync(path.join(RESPONSE_DIR, file));
+      }
+    });
+  } catch {}
+});
