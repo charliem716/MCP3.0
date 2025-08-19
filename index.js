@@ -24,6 +24,7 @@ class QSysMCP3Server {
     this.state = { connection: 'disconnected', host: null, reconnectAttempt: 0, connectedAt: null };
     this.cache = { discovery: null, timestamp: 0 };
     this.config = this.loadConfig();
+    this.monitors = new Map();
     
     this.server = new Server(
       { name: 'qsys-mcp3', version: '3.0.0' },
@@ -88,7 +89,7 @@ class QSysMCP3Server {
     return config;
   }
 
-  async connect({ host, port = 443, secure = true, pollingInterval = 350 }) {
+  async connect({ host, port = 443, secure = true, pollingInterval = 350, filter }) {
     if (this.qrwc) this.qrwc.close();
     
     this.state = { connection: 'connecting', host, reconnectAttempt: 0 };
@@ -102,18 +103,26 @@ class QSysMCP3Server {
       
       await new Promise((r, e) => (socket.once('open', r), socket.once('error', e)));
       
-      this.qrwc = await Qrwc.createQrwc({ socket, pollingInterval: Math.max(34, pollingInterval) });
+      const options = { 
+        socket, 
+        pollingInterval: Math.max(34, pollingInterval),
+        componentFilter: filter ? (c) => new RegExp(filter, 'i').test(c.Name) : undefined
+      };
+      
+      this.qrwc = await Qrwc.createQrwc(options);
       this.state.connection = 'connected';
       this.state.connectedAt = new Date();
       
       this.qrwc.on('disconnected', () => this.handleDisconnect());
+      
+      const componentsLoaded = Object.keys(this.qrwc.components).length;
       
       try {
         fs.mkdirSync(CONFIG_DIR, { recursive: true });
         fs.writeFileSync(LAST_CONNECTION_FILE, JSON.stringify({ host, port, secure, pollingInterval }, null, 2));
       } catch {}
       
-      return { connected: true, host, port, secure, pollingInterval };
+      return { connected: true, host, port, secure, pollingInterval, componentsLoaded, filterApplied: !!filter };
     } catch (error) {
       this.state.connection = 'disconnected';
       throw error;
@@ -216,7 +225,11 @@ class QSysMCP3Server {
           value: ctrl.state.Value,
           string: ctrl.state.String,
           position: ctrl.state.Position,
-          bool: ctrl.state.Bool
+          bool: ctrl.state.Bool,
+          direction: ctrl.state.Direction,
+          choices: ctrl.state.Choices,
+          min: ctrl.state.ValueMin,
+          max: ctrl.state.ValueMax
         }));
       }
       
@@ -248,8 +261,18 @@ class QSysMCP3Server {
           return { control: path, error: this.getHelpfulError(path, comp) };
         }
         
-        const { Value, String, Position, Bool } = control.state;
-        return { control: path, value: Value, string: String, position: Position, bool: Bool };
+        const { Value, String, Position, Bool, Direction, Choices, ValueMin, ValueMax } = control.state;
+        return { 
+          control: path, 
+          value: Value, 
+          string: String, 
+          position: Position, 
+          bool: Bool,
+          direction: Direction,
+          choices: Choices,
+          min: ValueMin,
+          max: ValueMax
+        };
       } catch (error) {
         return { control: path, error: error.message };
       }
@@ -335,6 +358,48 @@ class QSysMCP3Server {
     
     const results = await Promise.allSettled(updates);
     return this.success(results.map(r => r.status === 'fulfilled' ? r.value : r.reason));
+  }
+
+  async toolMonitor({ action, id, controls }) {
+    if (action === 'start') {
+      if (!this.qrwc) return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+      
+      const updates = [];
+      const listeners = [];
+      
+      for (const path of controls) {
+        const [comp, ctrl] = this.parsePath(path);
+        const control = this.qrwc.components[comp]?.controls[ctrl];
+        if (!control) continue;
+        
+        const fn = (state) => {
+          updates.push({ path, ...state, time: Date.now() });
+          if (updates.length > 100) updates.shift();
+        };
+        control.on('update', fn);
+        listeners.push({ control, fn });
+      }
+      
+      this.monitors.set(id, { updates, listeners });
+      return this.success({ started: true, id, monitoring: listeners.length });
+    }
+    
+    if (action === 'read') {
+      const mon = this.monitors.get(id);
+      if (!mon) return this.error('Monitor not found', `Use action:'start' first with id:'${id}'`);
+      const events = mon.updates.splice(0);
+      return this.success({ events, count: events.length });
+    }
+    
+    if (action === 'stop') {
+      const mon = this.monitors.get(id);
+      if (!mon) return this.error('Monitor not found');
+      mon.listeners.forEach(({ control, fn }) => control.off('update', fn));
+      this.monitors.delete(id);
+      return this.success({ stopped: true, id });
+    }
+    
+    return this.error('Invalid action', 'Use start, read, or stop');
   }
 
   // Helpers
@@ -486,7 +551,8 @@ class QSysMCP3Server {
         qsys_status: () => this.toolStatus(args),
         qsys_discover: () => this.toolDiscover(args),
         qsys_get: () => this.toolGet(args),
-        qsys_set: () => this.toolSet(args)
+        qsys_set: () => this.toolSet(args),
+        qsys_monitor: () => this.toolMonitor(args)
       };
       
       return tools[name]?.() || this.error(`Unknown tool: ${name}`);
@@ -509,6 +575,10 @@ class QSysMCP3Server {
                 description: 'Control polling interval in ms (min: 34, default: 350)',
                 minimum: 34, 
                 default: 350 
+              },
+              filter: {
+                type: 'string',
+                description: 'Regex to filter components (e.g. "^Audio" for audio only)'
               }
             },
             required: ['host']
@@ -583,6 +653,30 @@ class QSysMCP3Server {
             properties: {
               detailed: { type: 'boolean', description: 'Include component inventory', default: false }
             }
+          }
+        },
+        {
+          name: 'qsys_monitor',
+          description: 'Monitor control changes in real-time',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              action: { 
+                type: 'string', 
+                enum: ['start', 'read', 'stop'],
+                description: 'Monitor action: start monitoring, read events, or stop'
+              },
+              id: { 
+                type: 'string', 
+                description: 'Unique monitor identifier'
+              },
+              controls: { 
+                type: 'array',
+                description: 'Control paths to monitor (only for start action)',
+                items: { type: 'string' }
+              }
+            },
+            required: ['action', 'id']
           }
         }
       ]
