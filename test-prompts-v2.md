@@ -187,41 +187,50 @@ REPORT FORMAT:
 ```
 TEST 1.2: Status Information and Monitoring
 
-Execute these 5 status monitoring scenarios:
+Execute these 5 status monitoring scenarios IN ORDER:
 
-1. Basic Status:
+1. Basic Status (while connected):
+   - First ensure you are connected: use qsys_connect with host: "192.168.50.150"
+   - Wait for connection to complete
    - Use qsys_status with no parameters
-   - Document all fields returned
-   - Verify minimal overhead (< 10ms)
+   - Document all fields returned (should include: connected, connectionState, host, componentCount, controlCount, pollingInterval, uptime)
+   - Note: overhead verification not required (no timing data in response)
 
 2. Detailed Status:
    - Use qsys_status with detailed: true
-   - Verify component inventory included
-   - Check performance impact
+   - Verify component inventory included (components array with name, type, controlCount)
+   - Count total components returned
 
 3. Disconnected Status:
-   - Disconnect from Core (if connected)
-   - Use qsys_status
-   - Verify shows disconnected state properly
+   - First force a disconnection: use qsys_connect with host: "1.1.1.1" (invalid IP)
+   - Wait for connection to fail (will return error)
+   - Now use qsys_status
+   - Verify connectionState shows "disconnected"
+   - Verify connected field is false
 
 4. Reconnecting Status:
-   - During reconnection attempt
-   - Use qsys_status
-   - Check for reconnectAttempt counter
+   - Connect to valid host: use qsys_connect with host: "192.168.50.150"
+   - Wait for successful connection
+   - Force disconnect by connecting to invalid host: use qsys_connect with host: "1.1.1.1"
+   - IMMEDIATELY (within 1 second) use qsys_status
+   - Check if connectionState shows "reconnecting" (may show "disconnected" if reconnect not yet started)
+   - Note: reconnectAttempt field only appears when state.reconnectAttempt > 0
 
 5. Uptime Tracking:
-   - Connect and note time
-   - Wait 30 seconds
-   - Check qsys_status shows correct uptime
+   - Connect fresh: use qsys_connect with host: "192.168.50.150"
+   - Wait for successful connection
+   - Immediately use qsys_status and note the uptime value (should be small, < 1000ms)
+   - Wait exactly 5 seconds
+   - Use qsys_status again and note the new uptime value
+   - Verify new uptime is approximately 5000ms larger than first value (±500ms tolerance)
 
 REPORT FORMAT:
-- Scenario 1: Basic Fields = [list all fields]
-- Scenario 2: Detailed Components = [count, sample shown]
-- Scenario 3: Disconnected = [proper state shown]
-- Scenario 4: Reconnecting = [attempt counter present]
-- Scenario 5: Uptime = [accurate to within 1s]
-- Status Overhead: [< 10ms verified?]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Basic Fields = [list all fields returned]
+- Scenario 2: Detailed Components = [count: X, sample: first 5 component names]
+- Scenario 3: Disconnected = [connected: false, connectionState: "disconnected"]
+- Scenario 4: Reconnecting = [connectionState value observed]
+- Scenario 5: Uptime = [first: Xms, after 5s: Yms, difference: ~5000ms]
+- Overall Result: [PASS if all scenarios complete successfully]
 ```
 
 ---
@@ -233,45 +242,56 @@ REPORT FORMAT:
 ```
 TEST 2.1: Component Discovery and Caching
 
-PREREQUISITE: Check connection with qsys_status. If not connected:
-- ASK user: "Q-SYS Core connection required. Please provide IP address (e.g., 192.168.1.100):"
-- Connect using qsys_connect with host: "[provided IP]"
+PREREQUISITE STEPS (execute in order):
+1. Use qsys_status to check connection
+2. If not connected or wrong host:
+   - Use qsys_connect with host: "192.168.50.150"
+   - Wait for connection response
+3. Verify connected before proceeding
 
-Execute these 5 discovery scenarios:
+Execute these 5 discovery scenarios IN ORDER:
 
 1. Full Discovery:
-   - Use qsys_discover with no parameters
-   - Measure response time
-   - Count total components found
+   - Use qsys_discover with no parameters (empty object: {})
+   - Count total components in response array
+   - Note: Response will be array of objects with {name, type, controlCount}
+   - Save the full result for comparison in scenario 2
 
 2. Cache Performance:
-   - Immediately call qsys_discover again
-   - Measure response time (should be < 1ms due to 1-second cache)
-   - Verify identical results
+   - Wait exactly 0.5 seconds (cache is still valid)
+   - Call qsys_discover again with no parameters
+   - Compare results with scenario 1 - should be IDENTICAL
+   - Note: Cache expires after 1 second
 
 3. Filtered Discovery:
-   - Use qsys_discover with component: "gain"
-   - Count filtered results
-   - Verify regex pattern matching works
+   - Wait 1 second for cache to expire
+   - Use qsys_discover with component: "Gain"
+   - Count components in result array
+   - All component names should contain "Gain" (case-insensitive)
+   - If no Gain components, try component: "Matrix" instead
 
 4. Discovery with Controls:
-   - Use qsys_discover with includeControls: true
-   - Verify control details included
-   - Check for value, string, position, bool fields
+   - Use qsys_discover with component: "Gain", includeControls: true
+   - First component should have "controls" array
+   - Each control should have these fields:
+     * name, type, value, string, position, bool
+     * NEW: direction, choices, min, max
+   - Count total controls across all components
 
 5. Large System Test:
-   - Use qsys_discover on full system
-   - Verify handles 100+ components
-   - Confirm memory usage stays < 50MB
+   - Use qsys_discover with no parameters
+   - Count components (typical Q-SYS has 50-200 components)
+   - If count > 100, mark as "large system handled"
+   - If count < 100, mark as "medium system"
+   - Note: Memory monitoring not possible from MCP client
 
 REPORT FORMAT:
-- Scenario 1: Full Discovery = [component count, time in ms]
-- Scenario 2: Cached = [time < 1ms, identical results]
-- Scenario 3: Filtered = [count matches pattern]
-- Scenario 4: With Controls = [control details present]
-- Scenario 5: Large System = [handled efficiently]
-- Discovery Performance: [meets < 10ms target?]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Full Discovery = [X components found]
+- Scenario 2: Cached = [identical: yes/no]
+- Scenario 3: Filtered = [Y components match "Gain"]
+- Scenario 4: With Controls = [controls included, metadata complete]
+- Scenario 5: Large System = [X components, system size: large/medium]
+- Overall Result: [PASS if all complete successfully]
 ```
 
 ### Test 2.2: Enhanced Metadata Discovery (5 Scenarios)
@@ -388,53 +408,72 @@ REPORT FORMAT:
 ```
 TEST 3.1: Real-time Monitor Tool Testing
 
-Test the new qsys_monitor tool for real-time control monitoring:
+PREREQUISITE STEPS:
+1. Ensure connected: use qsys_connect with host: "192.168.50.150"
+2. Use qsys_discover with component: "Gain" to find Gain components
+3. If no Gain components found, use qsys_discover with no parameters and pick first component
+4. Note the component name (e.g., "Gain_1") for use in tests
+
+Execute these 5 monitor scenarios IN ORDER:
 
 1. Start Simple Monitor:
-   - Find a Gain control using qsys_discover
+   - Use the component from prerequisite (e.g., "Gain_1")
    - Use qsys_monitor with:
      * action: "start"
      * id: "test_monitor_1"
-     * controls: ["[GainComponent].gain"]
-   - Verify response: started: true, monitoring: 1
+     * controls: ["Gain_1.gain"] (adjust component name as needed)
+   - Expected response: {started: true, id: "test_monitor_1", monitoring: 1}
+   - If monitoring: 0, the control path was invalid
 
 2. Read Monitor Events (No Changes):
+   - DO NOT change any controls yet
    - Use qsys_monitor with:
      * action: "read"
      * id: "test_monitor_1"
-   - Should return: events: [], count: 0
-   - Verify no events when control unchanged
+   - Expected response: {events: [], count: 0}
+   - Empty array confirms no false events
 
 3. Trigger and Capture Events:
-   - Change the monitored control value using qsys_set
-   - Wait 1 second
-   - Use qsys_monitor action: "read"
-   - Verify events array contains change
-   - Check event has: path, Value, String, Position, Bool, time
+   - First change the control: use qsys_set with:
+     * controls: [{path: "Gain_1.gain", value: -10}]
+   - Wait exactly 2 seconds for event to register
+   - Use qsys_monitor with:
+     * action: "read"
+     * id: "test_monitor_1"
+   - Events array should have 1 entry with:
+     * path: "Gain_1.gain"
+     * Value, String, Position, Bool fields
+     * time: timestamp in milliseconds
 
 4. Monitor Multiple Controls:
-   - Start new monitor "test_monitor_2" with 5 controls
-   - Change 3 of the 5 controls
-   - Read monitor events
-   - Verify only changed controls appear in events
-   - Check events are in chronological order
+   - Find 5 controls: use qsys_discover with includeControls: true
+   - Take first 5 control paths from any component
+   - Use qsys_monitor with:
+     * action: "start"
+     * id: "test_monitor_2"
+     * controls: [array of 5 control paths]
+   - Change 3 controls using qsys_set
+   - Wait 2 seconds
+   - Read monitor with action: "read", id: "test_monitor_2"
+   - Should have exactly 3 events
 
 5. Stop Monitor:
    - Use qsys_monitor with:
      * action: "stop"
      * id: "test_monitor_1"
-   - Verify response: stopped: true
-   - Try to read stopped monitor
-   - Should error with "Monitor not found"
+   - Expected: {stopped: true, id: "test_monitor_1"}
+   - Now try to read: use qsys_monitor with:
+     * action: "read"
+     * id: "test_monitor_1"
+   - Should get error: "Monitor not found"
 
 REPORT FORMAT:
-- Scenario 1: Start Monitor = [started successfully]
-- Scenario 2: Empty Read = [no false events]
-- Scenario 3: Capture Events = [changes detected]
-- Scenario 4: Multi-Control = [3/5 events captured]
-- Scenario 5: Stop Monitor = [cleaned up properly]
-- Monitor Performance: [real-time detection]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Start Monitor = [started: true, monitoring: 1]
+- Scenario 2: Empty Read = [events: [], count: 0]
+- Scenario 3: Capture Events = [1 event captured with timestamp]
+- Scenario 4: Multi-Control = [3 events from 5 monitored controls]
+- Scenario 5: Stop Monitor = [stopped: true, read error: "Monitor not found"]
+- Overall Result: [PASS if all scenarios complete]
 ```
 
 ### Test 3.2: Monitor Advanced Features (5 Scenarios)
@@ -442,50 +481,71 @@ REPORT FORMAT:
 ```
 TEST 3.2: Advanced Monitor Capabilities
 
-Test advanced monitoring features and edge cases:
+PREREQUISITE STEPS:
+1. Use qsys_discover with includeControls: true
+2. Pick any component with at least 3 controls
+3. Note 3 control paths (e.g., "Component.control1", "Component.control2", "Component.control3")
+
+Execute these 5 advanced scenarios IN ORDER:
 
 1. Buffer Overflow Test:
-   - Start monitor on frequently changing control
-   - Trigger > 100 changes without reading
-   - Read events
-   - Should have exactly 100 events (circular buffer)
-   - Verify oldest events dropped, newest kept
+   - Start monitor: use qsys_monitor with:
+     * action: "start", id: "overflow_test", controls: [first control path]
+   - Make 105 rapid changes using qsys_set:
+     * Loop: set value to 0, then 1, then 2... up to 104
+     * Each qsys_set call: controls: [{path: control_path, value: N}]
+   - Wait 3 seconds for all events to register
+   - Read monitor: action: "read", id: "overflow_test"
+   - Count events in array (should be exactly 100, not 105)
+   - Stop monitor: action: "stop", id: "overflow_test"
 
 2. Multiple Monitor Instances:
-   - Start 3 different monitors with different IDs
-   - Each monitoring different controls
-   - Verify all work independently
-   - Read from each separately
-   - Stop each separately
+   - Start monitor 1: action: "start", id: "mon_1", controls: [control_1]
+   - Start monitor 2: action: "start", id: "mon_2", controls: [control_2]
+   - Start monitor 3: action: "start", id: "mon_3", controls: [control_3]
+   - Change control_1 with qsys_set to value: 5
+   - Change control_2 with qsys_set to value: 10
+   - Read mon_1: should have 1 event
+   - Read mon_2: should have 1 event
+   - Read mon_3: should have 0 events
+   - Stop all three monitors
 
 3. Overlapping Monitors:
-   - Start monitor_A on controls [X, Y]
-   - Start monitor_B on controls [Y, Z]
-   - Change control Y
-   - Both monitors should capture the change
-   - Verify independence
+   - Start monitor_A: action: "start", id: "mon_A", controls: [control_1, control_2]
+   - Start monitor_B: action: "start", id: "mon_B", controls: [control_2, control_3]
+   - Change control_2 with qsys_set to value: 20
+   - Wait 1 second
+   - Read mon_A: should have 1 event for control_2
+   - Read mon_B: should also have 1 event for control_2
+   - Stop both monitors
 
 4. Monitor Non-Existent Control:
-   - Try to monitor invalid control path
-   - Should start but with monitoring: 0
-   - Or handle gracefully with partial success
+   - Try to start monitor with invalid path:
+     * action: "start", id: "invalid_test", controls: ["FakeComponent.fakeControl"]
+   - Response should show: started: true, monitoring: 0
+   - This indicates monitor started but no valid controls
+   - Stop monitor: action: "stop", id: "invalid_test"
 
 5. Rapid Read Clearing:
-   - Start monitor and trigger 10 events
-   - Read events (should get 10)
-   - Immediately read again (should get 0)
-   - Verify read clears the buffer
-   - Trigger 5 more events
-   - Read should get exactly 5 new events
+   - Start monitor: action: "start", id: "clear_test", controls: [control_1]
+   - Make 10 changes to control_1 (values 0-9)
+   - Wait 2 seconds
+   - First read: action: "read", id: "clear_test"
+   - Should get events array with 10 items
+   - Immediately read again: action: "read", id: "clear_test"
+   - Should get events: [], count: 0 (buffer cleared)
+   - Make 5 more changes (values 10-14)
+   - Wait 1 second
+   - Read again: should get exactly 5 new events
+   - Stop monitor
 
 REPORT FORMAT:
-- Scenario 1: Buffer = [100 event limit, circular]
-- Scenario 2: Multiple = [3 independent monitors]
-- Scenario 3: Overlapping = [both capture shared control]
-- Scenario 4: Invalid = [graceful handling]
-- Scenario 5: Read Clear = [buffer clears on read]
-- Monitor Reliability: [stable and predictable]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Buffer = [100 events max (not 105)]
+- Scenario 2: Multiple = [3 monitors work independently]
+- Scenario 3: Overlapping = [both captured control_2 change]
+- Scenario 4: Invalid = [started: true, monitoring: 0]
+- Scenario 5: Read Clear = [10 events, then 0, then 5]
+- Overall Result: [PASS if all scenarios complete]
 ```
 
 ## SECTION 4: CONTROL OPERATIONS (qsys_get & qsys_set)
@@ -495,139 +555,208 @@ REPORT FORMAT:
 ```
 TEST 4.1: Control Get with Enhanced Metadata
 
-Test the enhanced qsys_get with new metadata fields:
+PREREQUISITE STEPS:
+1. Use qsys_connect with host: "192.168.50.150"
+2. Use qsys_discover with component: "Gain", includeControls: true
+3. If no Gain found, use qsys_discover with includeControls: true and pick first component
+4. Note control paths from the component for testing
+
+Execute these 5 get scenarios IN ORDER:
 
 1. Single Control Get with Metadata:
-   - Find a gain control using qsys_discover
-   - Use qsys_get with single control path
-   - Verify ALL fields returned:
-     * Original: value, string, position, bool
-     * NEW: direction, choices, min, max
-   - Document which fields are populated
+   - Pick a ".gain" control path (e.g., "Gain_1.gain")
+   - Use qsys_get with controls: ["Gain_1.gain"]
+   - Response array should have 1 object with these fields:
+     * control: the path you requested
+     * value: numeric value
+     * string: string representation
+     * position: 0-1 normalized position
+     * bool: boolean state
+     * direction: "Read", "Write", or "Read/Write"
+     * choices: array (may be empty)
+     * min: minimum value (may be undefined)
+     * max: maximum value (may be undefined)
+   - Count how many fields are present (should be 9 including control)
 
 2. Dropdown Control Get:
-   - Find a control that's a dropdown/selector
-   - Use qsys_get on it
-   - Verify choices array contains options
-   - Verify current value matches one of the choices
-   - Test setting to different choice
+   - Use qsys_discover to find a control with type "String" that has choices
+   - Common examples: routing selectors, mode switches
+   - Use qsys_get on that control
+   - Verify choices array is not empty
+   - Current string value should match one of the choices
+   - If no dropdown found, skip with note "No dropdown controls available"
 
 3. Read-Only Control Get:
-   - Find control with direction: "Read"
-   - Use qsys_get to retrieve it
-   - Note the direction field
-   - Attempt qsys_set (should fail)
-   - Verify error mentions read-only
+   - Look for control with ".status" or ".meter" in name
+   - Use qsys_get on it
+   - Check if direction field shows "Read"
+   - If direction is "Read", try qsys_set with:
+     * controls: [{path: control_path, value: 0}]
+   - Should get error mentioning read-only or permission
+   - If no read-only found, note "No read-only controls found"
 
 4. Range-Limited Control:
-   - Find control with min/max defined
-   - Use qsys_get to see limits
-   - Try setting to min-1 (should fail)
-   - Try setting to max+1 (should fail)
-   - Try setting to (min+max)/2 (should work)
+   - Use gain control from scenario 1
+   - qsys_get should show min and max values (typically -100 to 20 for gain)
+   - Try qsys_set with value: min - 10 (e.g., -110 for gain)
+   - Should get error about minimum value
+   - Try qsys_set with value: max + 10 (e.g., 30 for gain)
+   - Should get error about maximum value
+   - Try qsys_set with value: 0 (midrange)
+   - Should succeed with confirmed: true
 
 5. Batch Get with Mixed Types:
-   - Get 10 controls of different types in one call
-   - Verify each has appropriate metadata
-   - Check booleans have direction but not min/max
-   - Check floats have min/max but not choices
-   - Check selectors have choices but not min/max
+   - Use qsys_discover with includeControls: true
+   - Find at least 3 different control types (Float, Boolean, String)
+   - Create array of 10 control paths mixing these types
+   - Use qsys_get with controls: [array of 10 paths]
+   - For each control in response:
+     * Boolean type: should have direction, no min/max
+     * Float type: should have min/max, no choices
+     * String type: might have choices, no min/max
+   - If can't find 10 controls, use whatever available
 
 REPORT FORMAT:
-- Scenario 1: Full Metadata = [8 fields present]
-- Scenario 2: Dropdown = [choices array works]
-- Scenario 3: Read-Only = [direction prevents set]
-- Scenario 4: Range = [min/max enforced]
-- Scenario 5: Mixed Types = [appropriate metadata per type]
-- Metadata Completeness: [all relevant fields]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Full Metadata = [9 fields present on gain control]
+- Scenario 2: Dropdown = [choices array populated or N/A]
+- Scenario 3: Read-Only = [direction field works or N/A]
+- Scenario 4: Range = [min: X, max: Y, validation works]
+- Scenario 5: Mixed Types = [10 controls retrieved with appropriate metadata]
+- Overall Result: [PASS if core scenarios work]
 ```
 
 ### Test 4.2: Batch Get Operations (5 Scenarios)
 
 ```
-TEST 3.1: Control Value Retrieval Performance
+TEST 4.2: Control Value Retrieval in Batches
 
-PREREQUISITE: Ensure connected to Q-SYS Core
+PREREQUISITE STEPS:
+1. Use qsys_connect with host: "192.168.50.150"
+2. Use qsys_discover with includeControls: true
+3. Collect control paths from multiple components
+4. You need at least 100 valid control paths for this test
 
-Execute these 5 batch retrieval scenarios:
+Execute these 5 batch retrieval scenarios IN ORDER:
 
 1. Single Control Get:
-   - Find a gain control using qsys_discover
-   - Use qsys_get with single control path
-   - Verify all value types returned (value, string, position, bool)
+   - Pick any single control path (e.g., "Gain_1.gain")
+   - Use qsys_get with controls: [single_path]
+   - Verify response array has 1 object with:
+     * value (number), string, position, bool
+     * direction, choices, min, max
+   - All 8 metadata fields should be present
 
 2. Small Batch (10 controls):
-   - Use qsys_get with 10 control paths
-   - Measure total response time
-   - Verify parallel execution (should be same speed as single)
+   - Create array of exactly 10 control paths
+   - Use qsys_get with controls: [array_of_10]
+   - Response should have exactly 10 objects
+   - Each object should have control field matching requested path
+   - Note: Parallel execution means all 10 return together
 
 3. Medium Batch (50 controls):
-   - Use qsys_get with 50 control paths
-   - Measure response time
-   - Calculate per-control overhead
+   - Create array of exactly 50 control paths
+   - Use qsys_get with controls: [array_of_50]
+   - Response should have exactly 50 objects
+   - Verify no errors in any control response
+   - All should complete successfully
 
 4. Maximum Batch (100 controls):
-   - Use qsys_get with 100 control paths (max allowed)
-   - Verify successful completion
-   - Check memory usage stays < 50MB
+   - Create array of exactly 100 control paths
+   - Use qsys_get with controls: [array_of_100]
+   - Response should have exactly 100 objects
+   - This is the maximum allowed per call
+   - All should return valid data
 
 5. Error Handling in Batch:
-   - Mix 5 valid paths with 5 invalid paths
-   - Use qsys_get on all 10
-   - Verify valid controls return values, invalid show helpful errors
+   - Create array with 10 paths:
+     * 5 valid paths from discovery
+     * 5 invalid: ["Fake.control", "Bad.path", "No.exist", "Wrong.name", "Invalid.ctrl"]
+   - Use qsys_get with controls: [mixed_array]
+   - Response should have 10 objects
+   - Valid paths: have value, string, etc.
+   - Invalid paths: have error field with helpful message
+   - Errors should suggest available controls
 
 REPORT FORMAT:
-- Scenario 1: Single Get = [time, all fields present]
-- Scenario 2: Batch 10 = [time, parallel verified]
-- Scenario 3: Batch 50 = [time, overhead per control]
-- Scenario 4: Batch 100 = [time, memory OK]
-- Scenario 5: Mixed Valid/Invalid = [errors helpful]
-- Batch Performance: [< 10ms overhead achieved?]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Single Get = [8 fields present]
+- Scenario 2: Batch 10 = [10 responses received]
+- Scenario 3: Batch 50 = [50 responses received]
+- Scenario 4: Batch 100 = [100 responses received, max limit works]
+- Scenario 5: Mixed Valid/Invalid = [5 valid, 5 errors with suggestions]
+- Overall Result: [PASS if all batches complete]
 ```
 
 ### Test 4.3: Batch Set Operations with Validation (5 Scenarios)
 
 ```
-TEST 3.2: Control Value Setting with Type Safety
+TEST 4.3: Control Value Setting with Type Safety
 
-Execute these 5 batch set scenarios:
+PREREQUISITE STEPS:
+1. Use qsys_discover with includeControls: true
+2. Identify controls by type:
+   - Float controls (Type: "Float") - usually gains, levels
+   - Boolean controls (Type: "Boolean") - usually mutes, enables
+   - Integer controls (Type: "Integer") - if available
+3. Note their paths and current values
+
+Execute these 5 batch set scenarios IN ORDER:
 
 1. Simple Set with Type Validation:
-   - Find Float, Integer, and Boolean controls
-   - Use qsys_set with appropriate values for each type
-   - Verify type validation works (e.g., boolean requires true/false)
+   - Find one Float control (e.g., gain)
+   - Find one Boolean control (e.g., mute)
+   - Use qsys_set with controls:
+     [{path: float_path, value: -10.5},
+      {path: bool_path, value: true}]
+   - Both should return confirmed: true
+   - Try setting Boolean with number:
+     [{path: bool_path, value: 1}]
+   - Should get type error: "Boolean control requires true/false"
 
-2. Batch Set Performance (10 controls):
-   - Set 10 controls in single qsys_set call
-   - Measure response time
-   - Verify all updates confirmed
+2. Batch Set (10 controls):
+   - Create array of 10 control updates
+   - Mix Float and Boolean types with valid values
+   - Use qsys_set with controls: [array_of_10]
+   - Response should have 10 objects
+   - Each should have confirmed: true
+   - All should complete together (parallel)
 
 3. Range Validation:
-   - Try setting value below ValueMin
-   - Try setting value above ValueMax
-   - Verify proper error messages with actual limits
+   - Use a gain control (typically min: -100, max: 20)
+   - First get the control to see actual min/max
+   - Try qsys_set with value: -200 (below min)
+   - Error should state: "Value -200 below minimum -100"
+   - Try qsys_set with value: 50 (above max)
+   - Error should state: "Value 50 above maximum 20"
+   - Try qsys_set with value: 0 (valid)
+   - Should succeed with confirmed: true
 
 4. Protected Control Testing:
-   - Try setting a Master.* or Emergency.* control without force
-   - Verify protection error
-   - Retry with force: true
-   - Confirm override works
+   - Look for control starting with "Master." or "Emergency."
+   - If none exist, try "SystemMute" or any ".power" control
+   - First attempt without force:
+     [{path: protected_path, value: any_value}]
+   - Should get error: "Protected control. Use force:true to override"
+   - Retry with force:
+     [{path: protected_path, value: any_value, force: true}]
+   - Should succeed with confirmed: true
+   - If no protected controls, note "No protected controls found"
 
 5. Maximum Batch (50 controls):
-   - Use qsys_set with 50 control updates
-   - Mix different value types
-   - Verify parallel execution performance
+   - Create array of exactly 50 control updates
+   - Use any available control paths
+   - Set all to safe values (0 for gains, false for mutes)
+   - Use qsys_set with controls: [array_of_50]
+   - This is the maximum allowed per call
+   - All 50 should return with confirmed: true
+   - Or error if control is read-only
 
 REPORT FORMAT:
-- Scenario 1: Type Validation = [Float, Integer, Boolean correct]
-- Scenario 2: Batch 10 = [time, all confirmed]
-- Scenario 3: Range Check = [min/max enforced properly]
-- Scenario 4: Protection = [blocked, then forced successfully]
-- Scenario 5: Batch 50 = [time, parallel execution]
-- Set Performance: [< 10ms overhead per control?]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Type Validation = [Float works, Boolean works, type error caught]
+- Scenario 2: Batch 10 = [10 confirmed updates]
+- Scenario 3: Range Check = [min: X, max: Y, validation works]
+- Scenario 4: Protection = [blocked without force, succeeded with force]
+- Scenario 5: Batch 50 = [50 updates processed, max limit works]
+- Overall Result: [PASS if validation and batching work]
 ```
 
 ### Test 4.4: Error Messages and Recovery (5 Scenarios)
@@ -678,51 +807,68 @@ REPORT FORMAT:
 ```
 TEST 5.1: System Performance Under Load with Monitors
 
-Execute these 5 performance stress tests including monitors:
+PREREQUISITE STEPS:
+1. Use qsys_connect with host: "192.168.50.150"
+2. Use qsys_discover with includeControls: true
+3. Collect at least 20 control paths for testing
+
+Execute these 5 performance stress tests IN ORDER:
 
 1. Monitor Performance Impact:
-   - Start 5 monitors each watching 10 controls
-   - Run 50 qsys_get calls
-   - Compare response time with/without monitors
-   - Verify minimal impact (< 10% slower)
+   - Start 5 monitors, each with 2 controls:
+     * qsys_monitor action: "start", id: "perf_1", controls: [2 paths]
+     * qsys_monitor action: "start", id: "perf_2", controls: [2 paths]
+     * Continue for perf_3, perf_4, perf_5
+   - Execute 50 qsys_get calls with single control each
+   - All operations should complete without errors
+   - Stop all 5 monitors when done
 
 2. Sustained Monitoring:
-   - Start monitor on 20 controls
-   - Continuously change 10 controls for 30 seconds
-   - Read monitor every 2 seconds
-   - Verify no event loss
-   - Check memory stays < 50MB
+   - Pick 20 control paths
+   - Start monitor: action: "start", id: "sustained", controls: [20 paths]
+   - Loop 15 times (simulating 30 seconds):
+     * Change 10 of the monitored controls with qsys_set
+     * Wait 2 seconds
+     * Read monitor: action: "read", id: "sustained"
+     * Note event count
+   - Total events should roughly match total changes made
+   - Stop monitor when done
 
 3. Mixed Operation Load with Monitors:
-   - 2 active monitors running
-   - Alternate between get, set, discover, status (25 each)
-   - Periodically read monitor events
-   - Total 100 operations + monitor reads
-   - Measure total time and memory usage
+   - Start 2 monitors with 5 controls each
+   - Execute in sequence:
+     * 25 qsys_get calls
+     * 25 qsys_set calls
+     * 25 qsys_discover calls
+     * 25 qsys_status calls
+     * Read both monitors every 10 operations
+   - All 100 operations should complete
+   - Stop both monitors
 
 4. Monitor Stress Test:
-   - Start 10 monitors
-   - Each monitoring 10 controls (100 total)
-   - Change 50 controls rapidly
-   - Read all monitors
-   - Verify correct event distribution
-   - Stop all monitors
-   - Check cleanup (memory returns to baseline)
+   - Start 10 monitors (id: "stress_0" through "stress_9")
+   - Each monitoring 5 different controls
+   - Change 25 controls using qsys_set
+   - Read all 10 monitors
+   - Each monitor should only have events for its controls
+   - Stop all 10 monitors
+   - Verify all stop successfully
 
 5. Filter + Monitor Performance:
-   - Connect with filter: "Gain" (reduced components)
-   - Start monitors on filtered components only
-   - Compare performance vs. non-filtered
-   - Should be significantly faster/lighter
+   - Reconnect with filter: use qsys_connect with host and filter: "Gain"
+   - Use qsys_discover to verify reduced component count
+   - Start monitor on available Gain controls only
+   - Perform 20 operations (get/set) on filtered controls
+   - All should complete successfully
+   - Note: Filtered connection uses less memory
 
 REPORT FORMAT:
-- Scenario 1: Monitor Overhead = [< 10% impact]
-- Scenario 2: Sustained = [no event loss, memory OK]
-- Scenario 3: Mixed + Monitors = [total time, stable]
-- Scenario 4: 10 Monitors = [handled correctly]
-- Scenario 5: Filtered = [better performance]
-- Performance Grade: [A/B/C/D/F based on targets]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Monitor Overhead = [50 gets completed with 5 monitors active]
+- Scenario 2: Sustained = [~150 events captured over 15 reads]
+- Scenario 3: Mixed + Monitors = [100 operations completed]
+- Scenario 4: 10 Monitors = [all started, read, and stopped successfully]
+- Scenario 5: Filtered = [reduced to X Gain components, ops successful]
+- Overall Result: [PASS if all complete without errors]
 ```
 
 ### Test 5.2: Sustained Load Testing (5 Scenarios)
@@ -771,42 +917,58 @@ REPORT FORMAT:
 ### Test 5.3: Parallel Operation Testing (5 Scenarios)
 
 ```
-TEST 4.2: Parallel Batch Performance
+TEST 5.3: Parallel Batch Performance
 
-MCP3.0 emphasizes parallel execution for batch operations:
+PREREQUISITE STEPS:
+1. Use qsys_discover to collect 100+ control paths
+2. Prepare arrays of different sizes for testing
 
-1. Parallel vs Sequential Comparison:
-   - Get 20 controls individually (sequential)
-   - Get same 20 controls in one batch call
-   - Compare times (batch should be ~20x faster)
+Execute these 5 parallel operation tests IN ORDER:
+
+1. Sequential vs Batch Comparison:
+   - Pick 20 control paths
+   - Sequential: Call qsys_get 20 times, each with 1 control
+     * controls: [path1], then controls: [path2], etc.
+   - Batch: Call qsys_get once with all 20
+     * controls: [path1, path2, ... path20]
+   - Both should work, batch returns all 20 at once
+   - Note: Batch is more efficient (1 round trip vs 20)
 
 2. Parallel Set Operations:
-   - Set 30 controls in one batch
-   - Verify all complete simultaneously
-   - Check no sequential delays
+   - Create 30 control updates
+   - Use qsys_set with controls: [array of 30 updates]
+   - Response should have 30 objects
+   - All should have confirmed: true (or error if read-only)
+   - All 30 process together, not one-by-one
 
 3. Maximum Parallel Gets:
-   - Get 100 controls (maximum) in one call
-   - Measure total time
-   - Should be same as getting 1 control
+   - Create array of exactly 100 control paths
+   - Use qsys_get with controls: [array of 100]
+   - Should return 100 control values
+   - This is the maximum per call
+   - All return together in one response
 
 4. Maximum Parallel Sets:
-   - Set 50 controls (maximum) in one call
-   - Measure total time
-   - Verify parallel execution
+   - Create array of exactly 50 control updates
+   - Use qsys_set with controls: [array of 50]
+   - Should return 50 confirmations
+   - This is the maximum per call
+   - All process together
 
-5. Mixed Parallel Operations:
-   - While batch get is running, call qsys_status
-   - Verify both complete without blocking
+5. Concurrent Tool Calls:
+   - Note: MCP tools process sequentially, not concurrently
+   - Call qsys_get with 50 controls
+   - Immediately call qsys_status
+   - Both should complete successfully
+   - Second call waits for first to finish
 
 REPORT FORMAT:
-- Scenario 1: Sequential vs Batch = [20x speedup achieved?]
-- Scenario 2: Parallel Sets = [simultaneous completion]
-- Scenario 3: 100 Gets = [time same as 1 get?]
-- Scenario 4: 50 Sets = [parallel verified]
-- Scenario 5: Non-blocking = [operations don't block]
-- Parallel Efficiency: [target met?]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Sequential vs Batch = [20 individual vs 1 batch call works]
+- Scenario 2: Parallel Sets = [30 updates in single response]
+- Scenario 3: 100 Gets = [maximum batch retrieved]
+- Scenario 4: 50 Sets = [maximum batch updated]
+- Scenario 5: Tool Calls = [both complete successfully]
+- Overall Result: [PASS if all batches work]
 ```
 
 ---
@@ -818,92 +980,140 @@ REPORT FORMAT:
 ```
 TEST 6.1: System Limits with Enhanced Features
 
-Execute these 5 boundary tests including new features:
+PREREQUISITE STEPS:
+1. Use qsys_connect with host: "192.168.50.150"
+2. Use qsys_discover to get available components
+
+Execute these 5 boundary tests IN ORDER:
 
 1. Monitor Limits:
-   - Try starting monitor with 0 controls (empty array)
-   - Try monitoring 200 controls (very large)
-   - Try using duplicate monitor ID
-   - Verify appropriate errors/handling
+   - Try empty array: qsys_monitor with:
+     * action: "start", id: "empty_test", controls: []
+   - Should either error or start with monitoring: 0
+   - Try 200 controls (create large array):
+     * action: "start", id: "large_test", controls: [200 paths]
+   - Should handle gracefully (may limit or accept all)
+   - Try duplicate ID while "large_test" still active:
+     * action: "start", id: "large_test", controls: [any path]
+   - May error or replace existing monitor
+   - Stop any started monitors
 
 2. Filter Pattern Limits:
-   - Connect with invalid regex in filter
-   - Connect with filter matching 0 components
-   - Connect with filter matching all components
-   - Connect with very complex regex pattern
-   - Verify graceful handling
+   - Try invalid regex: qsys_connect with:
+     * host: "192.168.50.150", filter: "[invalid(regex"
+   - Should error with "Invalid filter pattern"
+   - Try filter matching nothing:
+     * host: "192.168.50.150", filter: "^NoSuchComponent$"
+   - Should error "No components match filter"
+   - Try filter matching everything:
+     * host: "192.168.50.150", filter: ".*"
+   - Should connect with all components
+   - Try complex pattern:
+     * host: "192.168.50.150", filter: "(Gain|Matrix).*[0-9]+$"
+   - Should work if valid regex
 
 3. Metadata Edge Cases:
-   - Find control with undefined min/max
-   - Find control with empty choices array
-   - Find control with null direction
-   - Verify qsys_get handles missing metadata
+   - Use qsys_get on various controls
+   - Look for controls where:
+     * min/max are undefined (common for non-numeric)
+     * choices is empty array or undefined
+     * direction might be missing
+   - All should return without crashing
+   - Missing fields should be undefined or appropriate defaults
 
 4. Monitor ID Validation:
-   - Try monitor ID with special characters
-   - Try very long monitor ID (100+ chars)
-   - Try numeric-only ID
-   - Try empty string ID
-   - Verify acceptance or clear errors
+   - Try special characters:
+     * action: "start", id: "test!@#$%", controls: [path]
+   - Try very long ID (create 150 character string):
+     * action: "start", id: "x" repeated 150 times, controls: [path]
+   - Try numeric only:
+     * action: "start", id: "12345", controls: [path]
+   - Try empty string:
+     * action: "start", id: "", controls: [path]
+   - Each should either work or give clear error
+   - Stop any successful monitors
 
 5. Combined Feature Limits:
-   - Connect with strict filter (5 components)
-   - Start monitor on filtered components
-   - Try to monitor non-filtered component
-   - Should fail appropriately
-   - Verify filter boundary respected
+   - Connect with strict filter:
+     * qsys_connect host: "192.168.50.150", filter: "^Gain"
+   - Use qsys_discover to see filtered components
+   - Start monitor on filtered component:
+     * action: "start", id: "filtered", controls: ["Gain_1.gain"]
+   - Try to monitor non-filtered component:
+     * action: "start", id: "outside", controls: ["Matrix_1.crosspoint"]
+   - Should fail since Matrix not in filtered set
+   - Error should mention component not found
 
 REPORT FORMAT:
-- Scenario 1: Monitor Limits = [appropriate errors]
-- Scenario 2: Filter Patterns = [handled gracefully]
-- Scenario 3: Missing Metadata = [no crashes]
-- Scenario 4: Monitor IDs = [validation works]
-- Scenario 5: Filter+Monitor = [boundaries enforced]
-- Boundary Handling: [robust]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Monitor Limits = [empty: X, 200: Y, duplicate: Z]
+- Scenario 2: Filter Patterns = [invalid: error, empty: error, all: works]
+- Scenario 3: Missing Metadata = [handled gracefully, no crashes]
+- Scenario 4: Monitor IDs = [special: X, long: Y, numeric: Z, empty: W]
+- Scenario 5: Filter+Monitor = [filtered works, outside filter fails]
+- Overall Result: [PASS if no crashes]
 ```
 
 ### Test 6.2: Boundary Testing (5 Scenarios)
 
 ```
-TEST 5.1: System Limits and Boundaries
+TEST 6.2: System Limits and Boundaries
 
-Execute these 5 boundary test scenarios:
+PREREQUISITE STEPS:
+1. Have connection ready
+2. Use qsys_discover to get valid control paths
+
+Execute these 5 boundary test scenarios IN ORDER:
 
 1. Minimum Polling Interval:
-   - Connect with pollingInterval: 33 (below minimum)
-   - Should clamp to 34ms minimum
-   - Connect with pollingInterval: 34 (exact minimum)
-   - Verify accepts exact minimum
+   - Connect with below minimum:
+     * qsys_connect host: "192.168.50.150", pollingInterval: 33
+   - Check response or qsys_status
+   - Should show pollingInterval: 34 (clamped to minimum)
+   - Connect with exact minimum:
+     * qsys_connect host: "192.168.50.150", pollingInterval: 34
+   - Should show pollingInterval: 34 (accepted)
 
 2. Empty Batch Operations:
-   - Try qsys_get with empty controls array
-   - Try qsys_set with empty controls array
-   - Should error with clear message
+   - Try empty get:
+     * qsys_get with controls: []
+   - Should error: requires at least 1 control
+   - Try empty set:
+     * qsys_set with controls: []
+   - Should error: requires at least 1 control
 
 3. Exceeding Batch Limits:
-   - Try qsys_get with 101 controls (over limit)
-   - Try qsys_set with 51 controls (over limit)
-   - Should error with limit information
+   - Create array of 101 control paths
+   - Try qsys_get with controls: [101 paths]
+   - Should error mentioning 100 maximum
+   - Create array of 51 control updates
+   - Try qsys_set with controls: [51 updates]
+   - Should error mentioning 50 maximum
 
 4. Long Control Names:
-   - Test with very long component/control names
-   - Verify proper handling
-   - Check error messages truncate appropriately
+   - Most Q-SYS controls have reasonable names
+   - Try a very long fake path:
+     * "VeryLongComponentName1234567890.VeryLongControlName1234567890"
+   - Use qsys_get with this path
+   - Should error gracefully
+   - Error message should be readable (not overflow)
 
-5. Special Characters:
-   - Test control paths with spaces, underscores, numbers
-   - Verify proper parsing
-   - Check Unicode handling if applicable
+5. Special Characters in Paths:
+   - Q-SYS typically uses: letters, numbers, spaces, underscores
+   - Try these paths in qsys_get:
+     * "Component_1.control_name" (underscores - should work)
+     * "Component 1.control name" (spaces - may work)
+     * "Component-1.control-name" (hyphens - may work)
+     * "Component.control.extra.dots" (extra dots - should fail)
+   - Valid characters should parse correctly
+   - Invalid should give format error
 
 REPORT FORMAT:
-- Scenario 1: Polling Limits = [33→34 clamped, 34 accepted]
-- Scenario 2: Empty Batches = [proper error messages]
-- Scenario 3: Over Limits = [clear limit errors]
-- Scenario 4: Long Names = [handled gracefully]
-- Scenario 5: Special Chars = [parsed correctly]
-- Boundary Handling: [robust]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Polling Limits = [33 clamped to 34, 34 accepted]
+- Scenario 2: Empty Batches = [both error with minItems message]
+- Scenario 3: Over Limits = [101 error max 100, 51 error max 50]
+- Scenario 4: Long Names = [error handled gracefully]
+- Scenario 5: Special Chars = [underscores work, extra dots fail]
+- Overall Result: [PASS if limits enforced]
 ```
 
 ### Test 6.3: Configuration and Environment (5 Scenarios)
@@ -956,106 +1166,185 @@ REPORT FORMAT:
 ```
 TEST 7.1: End-to-End Integration with All Features
 
-Execute these 5 complete workflow scenarios using new features:
+Execute these 5 complete workflow scenarios STEP BY STEP:
 
 1. Filtered Discovery to Monitoring:
-   - Connect with filter: "Gain"
-   - qsys_discover to verify only Gains loaded
-   - Start monitor on all Gain.gain controls
-   - Adjust gains using qsys_set
-   - Read monitor to verify changes captured
-   - Stop monitor
+   Step 1: Connect with filter
+     - qsys_connect host: "192.168.50.150", filter: "Gain"
+   Step 2: Verify filter worked
+     - qsys_discover with no parameters
+     - Should only show components with "Gain" in name
+   Step 3: Start monitoring
+     - Collect all .gain control paths from discovery
+     - qsys_monitor action: "start", id: "gain_mon", controls: [gain paths]
+   Step 4: Change values
+     - qsys_set with 3 gain controls to value: -10
+   Step 5: Read events
+     - Wait 2 seconds
+     - qsys_monitor action: "read", id: "gain_mon"
+     - Should have 3 events
+   Step 6: Cleanup
+     - qsys_monitor action: "stop", id: "gain_mon"
 
 2. Metadata-Driven UI Workflow:
-   - qsys_discover with includeControls: true
-   - Find control with choices array
-   - Display choices to user (simulate UI)
-   - Set to valid choice from array
-   - Find control with min/max
-   - Validate input against range before set
+   Step 1: Get detailed controls
+     - qsys_discover component: "Matrix", includeControls: true
+     - If no Matrix, use any component
+   Step 2: Find dropdown control
+     - Look for control with non-empty choices array
+     - Note the available choices
+   Step 3: Set valid choice
+     - qsys_set with value from choices array
+   Step 4: Find ranged control
+     - Look for control with min/max defined
+   Step 5: Test range validation
+     - Try value below min (should fail)
+     - Try value within range (should work)
 
 3. Read-Only Control Handling:
-   - qsys_get batch of 10 controls
-   - Identify read-only via direction field
-   - Skip read-only in batch set operation
-   - Only attempt to set Read/Write controls
-   - Verify intelligent handling
+   Step 1: Get mixed controls
+     - qsys_get with 10 different control paths
+   Step 2: Categorize by direction
+     - Group into Read-only and Read/Write
+   Step 3: Attempt batch set
+     - Create updates only for Read/Write controls
+     - qsys_set with filtered list
+   Step 4: Verify results
+     - All Read/Write should confirm
+     - No attempts on Read-only controls
 
 4. Real-time Dashboard Workflow:
-   - Start 3 monitors for different subsystems
-   - Continuously read all 3 monitors
-   - Simulate dashboard update every second
-   - Make changes via qsys_set
-   - Verify dashboard reflects changes immediately
-   - Stop all monitors cleanly
+   Step 1: Setup monitors
+     - qsys_monitor action: "start", id: "dash_1", controls: [3 paths]
+     - qsys_monitor action: "start", id: "dash_2", controls: [3 paths]
+     - qsys_monitor action: "start", id: "dash_3", controls: [3 paths]
+   Step 2: Initial read
+     - Read all 3 monitors (should be empty)
+   Step 3: Make changes
+     - qsys_set to change 2 controls from each monitor
+   Step 4: Read updates (repeat 3 times)
+     - Wait 2 seconds
+     - Read all 3 monitors
+     - Each should show its changes
+   Step 5: Cleanup
+     - Stop all 3 monitors
 
 5. Memory-Optimized Large System:
-   - Connect with aggressive filter (< 10 components)
-   - Verify fast connection and low memory
-   - Perform all operations on filtered set
-   - Monitor filtered components only
-   - Compare memory vs. unfiltered connection
-   - Document memory savings percentage
+   Step 1: Full connection baseline
+     - qsys_connect host: "192.168.50.150" (no filter)
+     - qsys_status to see componentCount
+   Step 2: Filtered connection
+     - qsys_connect host: "192.168.50.150", filter: "^(Gain|Level)"
+     - qsys_status to see reduced componentCount
+   Step 3: Operations on filtered set
+     - qsys_discover (should only show filtered)
+     - qsys_get on filtered controls
+     - qsys_set on filtered controls
+   Step 4: Monitor filtered only
+     - Start monitor on filtered controls
+     - Verify works normally
+   Step 5: Compare
+     - Note component reduction (e.g., 89 → 10)
+     - Calculate percentage saved
 
 REPORT FORMAT:
-- Scenario 1: Filter→Monitor = [complete flow works]
-- Scenario 2: Metadata UI = [choices/ranges used]
-- Scenario 3: Read-Only = [intelligent skipping]
-- Scenario 4: Dashboard = [real-time updates]
-- Scenario 5: Optimized = [X% memory saved]
-- Integration Quality: [smooth workflows]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Filter→Monitor = [6 steps completed]
+- Scenario 2: Metadata UI = [choices and ranges work]
+- Scenario 3: Read-Only = [skipped read-only correctly]
+- Scenario 4: Dashboard = [3 monitors captured changes]
+- Scenario 5: Optimized = [89 → X components, Y% reduction]
+- Overall Result: [PASS if workflows complete]
 ```
 
 ### Test 7.2: Complete Workflow Testing (5 Scenarios)
 
 ```
-TEST 6.1: End-to-End Integration Workflows
+TEST 7.2: End-to-End Integration Workflows
 
-Execute these 5 complete workflow scenarios:
+Execute these 5 complete workflow scenarios STEP BY STEP:
 
 1. Discovery to Control:
-   - qsys_discover to find components
-   - Pick a component with controls
-   - qsys_get to read current values
-   - qsys_set to modify values
-   - qsys_get to confirm changes
+   Step 1: Discover components
+     - qsys_discover with no parameters
+     - Pick first component with > 5 controls
+   Step 2: Read current values
+     - qsys_get with 5 control paths from that component
+     - Note current values
+   Step 3: Modify values
+     - qsys_set same 5 controls with new values
+     - All should confirm
+   Step 4: Verify changes
+     - qsys_get same 5 controls again
+     - Values should match what you set
 
 2. Connection Loss Recovery:
-   - Establish connection
-   - Perform operations
-   - Simulate connection loss
-   - Verify auto-reconnection
-   - Resume operations
+   Step 1: Establish baseline
+     - qsys_connect host: "192.168.50.150"
+     - qsys_status shows connected
+   Step 2: Working operations
+     - qsys_get with any control (verify works)
+   Step 3: Force disconnection
+     - qsys_connect host: "1.1.1.1" (invalid)
+     - Will error but state changes
+   Step 4: Check disconnected
+     - qsys_status shows disconnected
+   Step 5: Reconnect
+     - qsys_connect host: "192.168.50.150"
+     - qsys_status shows connected again
+   Step 6: Verify resumed
+     - qsys_get with same control works
 
 3. Filtered Discovery to Batch Update:
-   - qsys_discover with component: "gain"
-   - Extract all gain control paths
-   - qsys_get all gain values
-   - qsys_set all gains to -20dB
-   - Verify batch update success
+   Step 1: Filtered discovery
+     - qsys_discover component: "Gain"
+     - Collect all component names
+   Step 2: Build control paths
+     - For each Gain component, append ".gain"
+     - Create array of all gain paths
+   Step 3: Read current
+     - qsys_get with all gain paths
+     - Note current values
+   Step 4: Batch update
+     - qsys_set all gains to value: -20
+   Step 5: Verify
+     - qsys_get all gains again
+     - All should be -20
 
 4. Status Monitoring During Operations:
-   - Start batch operations
-   - Call qsys_status during operations
-   - Verify status accurate
-   - Check control/component counts
+   Step 1: Start operations
+     - Begin qsys_get with 50 controls
+   Step 2: Check status
+     - Immediately qsys_status
+     - Should still show connected
+   Step 3: More operations
+     - qsys_set with 25 controls
+     - qsys_discover
+   Step 4: Final status
+     - qsys_status
+     - Component/control counts unchanged
 
 5. Error Recovery Flow:
-   - Trigger connection error
-   - Verify state shows reconnecting
-   - Wait for reconnection
-   - Verify operations resume
-   - Check no data loss
+   Step 1: Baseline state
+     - qsys_status shows connected
+   Step 2: Trigger error
+     - qsys_connect host: "invalid.host.com"
+     - Will error
+   Step 3: Check state
+     - qsys_status shows disconnected
+   Step 4: Wait and retry
+     - Wait 2 seconds
+     - qsys_connect host: "192.168.50.150"
+   Step 5: Verify recovery
+     - qsys_status shows connected
+     - qsys_get works normally
 
 REPORT FORMAT:
-- Scenario 1: Discovery→Control = [complete flow works]
-- Scenario 2: Connection Recovery = [automatic, < 5s]
-- Scenario 3: Filtered→Batch = [efficient workflow]
-- Scenario 4: Concurrent Status = [accurate during ops]
-- Scenario 5: Error Recovery = [seamless resumption]
-- Integration Quality: [smooth workflows]
-- Overall Result: [PASS/FAIL]
+- Scenario 1: Discovery→Control = [4 steps: discover, get, set, verify]
+- Scenario 2: Connection Recovery = [6 steps completed]
+- Scenario 3: Filtered→Batch = [all gains set to -20]
+- Scenario 4: Concurrent Status = [status accurate throughout]
+- Scenario 5: Error Recovery = [disconnected → reconnected]
+- Overall Result: [PASS if all complete]
 ```
 
 ---
