@@ -556,7 +556,7 @@ class QSysMCP3Server {
     if (action === 'stop') {
       const mon = this.monitors.get(id);
       if (!mon) return this.error('Monitor not found');
-      mon.listeners.forEach(({ control, fn }) => control.off('update', fn));
+      mon.listeners.forEach(({ control, fn }) => control.removeListener('update', fn));
       this.monitors.delete(id);
       return this.success({ stopped: true, id });
     }
