@@ -21,7 +21,7 @@ const FILE_CLEANUP_AGE = 15 * 60 * 1000; // Clean files older than 15 minutes
 class QSysMCP3Server {
   constructor() {
     this.qrwc = null;
-    this.state = { connection: 'disconnected', host: null, reconnectAttempt: 0, connectedAt: null };
+    this.state = { connection: 'disconnected', host: null, reconnectAttempt: 0, connectedAt: null, filter: null };
     this.cache = { discovery: null, timestamp: 0 };
     this.config = this.loadConfig();
     this.monitors = new Map();
@@ -50,7 +50,12 @@ class QSysMCP3Server {
     this.server.connect(new StdioServerTransport()).then(() => {
       // Auto-connect if configured
       if (this.config.host && this.config.autoConnect !== false) {
-        this.connect(this.config).catch(console.error);
+        this.connect(this.config).catch(error => {
+          if (process.env.QSYS_MCP_DEBUG === 'true') {
+            console.error('Auto-connect failed:', error.message);
+          }
+          // Don't crash, just continue without connection
+        });
       }
     });
   }
@@ -90,9 +95,22 @@ class QSysMCP3Server {
   }
 
   async connect({ host, port = 443, secure = true, pollingInterval = 350, filter }) {
-    if (this.qrwc) this.qrwc.close();
+    // Validate host parameter
+    if (!host) {
+      throw new Error('Host parameter is required');
+    }
     
-    this.state = { connection: 'connecting', host, reconnectAttempt: 0 };
+    if (this.qrwc) {
+      try {
+        this.qrwc.close();
+      } catch (e) {
+        // Ignore close errors
+      }
+      this.qrwc = null;
+    }
+    
+    // Reset reconnection state on manual connect
+    this.state = { connection: 'connecting', host, reconnectAttempt: 0, filter, connectedAt: null };
     this.cache = { discovery: null, timestamp: 0 };
     
     try {
@@ -101,25 +119,66 @@ class QSysMCP3Server {
         { rejectUnauthorized: false }
       );
       
-      await new Promise((r, e) => (socket.once('open', r), socket.once('error', e)));
+      await new Promise((resolve, reject) => {
+        socket.once('open', resolve);
+        socket.once('error', reject);
+      });
+      
+      // Create filter function with error handling
+      let componentFilter = undefined;
+      if (filter) {
+        try {
+          const filterRegex = new RegExp(filter, 'i');
+          componentFilter = (c) => {
+            try {
+              return filterRegex.test(c.Name);
+            } catch {
+              return false;
+            }
+          };
+        } catch (error) {
+          throw new Error(`Invalid filter pattern: ${error.message}`);
+        }
+      }
       
       const options = { 
         socket, 
         pollingInterval: Math.max(34, pollingInterval),
-        componentFilter: filter ? (c) => new RegExp(filter, 'i').test(c.Name) : undefined
+        componentFilter
       };
       
       this.qrwc = await Qrwc.createQrwc(options);
+      
+      const componentsLoaded = Object.keys(this.qrwc.components).length;
+      
+      // If no components match the filter, close and return error
+      if (filter && componentsLoaded === 0) {
+        // Give SDK time to clean up before closing
+        await new Promise(r => setTimeout(r, 100));
+        try {
+          this.qrwc.close();
+        } catch {}
+        this.qrwc = null;
+        this.state.connection = 'disconnected';
+        throw new Error(`No components match filter pattern: "${filter}"`);
+      }
+      
       this.state.connection = 'connected';
       this.state.connectedAt = new Date();
       
       this.qrwc.on('disconnected', () => this.handleDisconnect());
       
-      const componentsLoaded = Object.keys(this.qrwc.components).length;
+      // Add error handler to prevent crashes
+      this.qrwc.on('error', (error) => {
+        if (process.env.QSYS_MCP_DEBUG === 'true') {
+          console.error('QRWC Error caught:', error.message);
+        }
+        this.handleDisconnect();
+      });
       
       try {
         fs.mkdirSync(CONFIG_DIR, { recursive: true });
-        fs.writeFileSync(LAST_CONNECTION_FILE, JSON.stringify({ host, port, secure, pollingInterval }, null, 2));
+        fs.writeFileSync(LAST_CONNECTION_FILE, JSON.stringify({ host, port, secure, pollingInterval, filter }, null, 2));
       } catch {}
       
       return { connected: true, host, port, secure, pollingInterval, componentsLoaded, filterApplied: !!filter };
@@ -130,6 +189,10 @@ class QSysMCP3Server {
   }
 
   handleDisconnect() {
+    // Don't restart if already reconnecting
+    if (this.state.connection === 'reconnecting') return;
+    
+    const previousFilter = this.state.filter;
     this.state.connection = 'disconnected';
     this.qrwc = null;
     this.cache = { discovery: null, timestamp: 0 };
@@ -140,16 +203,73 @@ class QSysMCP3Server {
       
       setTimeout(async () => {
         try {
-          await this.connect({ ...this.config, host: this.state.host });
-        } catch {
-          this.handleDisconnect();
+          await this.connect({ 
+            ...this.config, 
+            host: this.state.host,
+            filter: previousFilter
+          });
+          this.state.reconnectAttempt = 0; // Reset on success
+        } catch (error) {
+          if (process.env.QSYS_MCP_DEBUG === 'true') {
+            console.error('Reconnection failed:', error.message);
+          }
+          this.handleDisconnect(); // Try again
         }
       }, delay);
     }
   }
 
   // Tool implementations
-  async toolConnect(params) {
+  async toolConnect(params = {}) {
+    // If currently connecting, wait for it to complete
+    if (this.state.connection === 'connecting') {
+      const timeout = 10000; // 10 seconds
+      const start = Date.now();
+      
+      while (this.state.connection === 'connecting' && Date.now() - start < timeout) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+      
+      // Return result of the connection attempt
+      if (this.state.connection === 'connected') {
+        return this.success({ 
+          connected: true, 
+          host: this.state.host,
+          port: this.config.port,
+          secure: this.config.secure,
+          pollingInterval: this.config.pollingInterval,
+          componentsLoaded: Object.keys(this.qrwc?.components || {}).length,
+          filterApplied: !!this.state.filter
+        });
+      }
+      // If still not connected after timeout, fall through to try new connection
+    }
+    
+    // If already connected, return current connection info
+    if (this.state.connection === 'connected' && this.qrwc) {
+      return this.success({
+        connected: true,
+        host: this.state.host,
+        port: this.config.port,
+        secure: this.config.secure,
+        pollingInterval: this.config.pollingInterval,
+        componentsLoaded: Object.keys(this.qrwc.components).length,
+        filterApplied: !!this.state.filter
+      });
+    }
+    
+    // If no host provided, try to use saved config or return helpful error
+    if (!params.host) {
+      if (this.config.host) {
+        params.host = this.config.host;
+      } else {
+        return this.error(
+          'No host specified',
+          'Provide host IP address (e.g., { host: "192.168.1.100" })'
+        );
+      }
+    }
+    
     try {
       return this.success(await this.connect(params));
     } catch (error) {
@@ -555,7 +675,19 @@ class QSysMCP3Server {
         qsys_monitor: () => this.toolMonitor(args)
       };
       
-      return tools[name]?.() || this.error(`Unknown tool: ${name}`);
+      try {
+        const handler = tools[name];
+        if (!handler) {
+          return this.error(`Unknown tool: ${name}`);
+        }
+        const result = await handler();
+        if (!result || !result.content) {
+          return this.error('Tool returned invalid response', `Tool ${name} failed to return proper content`);
+        }
+        return result;
+      } catch (error) {
+        return this.error(`Tool execution failed: ${error.message}`, `Check parameters for ${name}`);
+      }
     });
     
     // Tool listing
