@@ -95,6 +95,8 @@ class QSysMCP3Server {
   }
 
   async connect({ host, port = 443, secure = true, pollingInterval = 350, filter }) {
+    const startTime = Date.now();
+    
     // Validate host parameter
     if (!host) {
       throw new Error('Host parameter is required');
@@ -181,9 +183,11 @@ class QSysMCP3Server {
         fs.writeFileSync(LAST_CONNECTION_FILE, JSON.stringify({ host, port, secure, pollingInterval, filter }, null, 2));
       } catch {}
       
-      return { connected: true, host, port, secure, pollingInterval, componentsLoaded, filterApplied: !!filter };
+      const connectionTime = Date.now() - startTime;
+      return { connected: true, host, port, secure, pollingInterval: Math.max(34, pollingInterval), componentsLoaded, filterApplied: !!filter, connectionTime };
     } catch (error) {
       this.state.connection = 'disconnected';
+      this.state.host = null;
       throw error;
     }
   }
@@ -245,8 +249,39 @@ class QSysMCP3Server {
       // If still not connected after timeout, fall through to try new connection
     }
     
-    // If already connected, return current connection info
+    // If already connected, check if filter needs to change or host is different
     if (this.state.connection === 'connected' && this.qrwc) {
+      // If host is different, need to reconnect
+      if (params.host && params.host !== this.state.host) {
+        try {
+          const mergedParams = {
+            port: this.config.port,
+            secure: this.config.secure,
+            pollingInterval: this.config.pollingInterval,
+            ...params
+          };
+          return this.success(await this.connect(mergedParams));
+        } catch (error) {
+          return this.error(error.message, 'Check host IP and ensure Q-SYS Core is accessible');
+        }
+      }
+      // If filter is different, need to reconnect
+      if (params.filter !== this.state.filter) {
+        // Disconnect and reconnect with new filter
+        try {
+          const mergedParams = {
+            port: this.config.port,
+            secure: this.config.secure,
+            pollingInterval: this.config.pollingInterval,
+            host: this.state.host,
+            ...params
+          };
+          return this.success(await this.connect(mergedParams));
+        } catch (error) {
+          return this.error(error.message, 'Check filter pattern and host connectivity');
+        }
+      }
+      // Otherwise return existing connection
       return this.success({
         connected: true,
         host: this.state.host,
@@ -271,7 +306,14 @@ class QSysMCP3Server {
     }
     
     try {
-      return this.success(await this.connect(params));
+      // Merge params with config defaults, params take precedence
+      const mergedParams = {
+        port: this.config.port,
+        secure: this.config.secure,
+        pollingInterval: this.config.pollingInterval,
+        ...params
+      };
+      return this.success(await this.connect(mergedParams));
     } catch (error) {
       return this.error(error.message, 'Check host IP and ensure Q-SYS Core is accessible');
     }
@@ -695,7 +737,7 @@ class QSysMCP3Server {
       tools: [
         {
           name: 'qsys_connect',
-          description: 'Connect to Q-SYS Core processor',
+          description: 'Connect to Q-SYS Core or return existing connection. Reconnects if host/filter changes.',
           inputSchema: {
             type: 'object',
             properties: {
