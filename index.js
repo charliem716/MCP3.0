@@ -389,9 +389,9 @@ class QSysMCP3Server {
           position: ctrl.state.Position,
           bool: ctrl.state.Bool,
           direction: ctrl.state.Direction,
-          choices: ctrl.state.Choices,
-          min: ctrl.state.ValueMin,
-          max: ctrl.state.ValueMax
+          choices: ctrl.state.Choices || null,
+          min: ctrl.state.ValueMin !== undefined ? ctrl.state.ValueMin : null,
+          max: ctrl.state.ValueMax !== undefined ? ctrl.state.ValueMax : null
         }));
       }
       
