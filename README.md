@@ -1,59 +1,57 @@
 # Q-SYS MCP3.0 Server
 
-High-performance MCP server for Q-SYS control with real-time monitoring. ~700 lines, 3 dependencies, 6 tools.
+Ultra-minimal MCP server for Q-SYS control. 582 lines, 3 dependencies, 4 tools.
 
 ## Quick Start
 
 ```bash
-# Install
+# Install (only 3 dependencies)
 npm install
 
-# Run with environment variable
-QSYS_HOST=192.168.1.100 npm start
+# Run with Q-SYS Core IP
+QSYS_HOST=192.168.1.100 node index.js
 
-# Run with debug logging
-npm run dev
+# With debug logging
+QSYS_HOST=192.168.1.100 QSYS_MCP_DEBUG=true node index.js
 ```
 
 ## Configuration
 
-### Environment Variables
+### Environment Variables (Required)
 ```bash
-QSYS_HOST=192.168.1.100    # Q-SYS Core IP address
+QSYS_HOST=192.168.1.100    # Q-SYS Core IP address (required)
 QSYS_PORT=443               # WebSocket port (default: 443)
-QSYS_AUTO_CONNECT=true      # Auto-connect on startup
-QSYS_MCP_DEBUG=true         # Enable debug logging
-QSYS_POLLING_INTERVAL=350   # Control polling interval in ms
+QSYS_SECURE=true            # Use secure WebSocket (default: true)
+QSYS_POLLING_INTERVAL=350   # Control polling interval in ms (default: 350)
+QSYS_MCP_DEBUG=true         # Enable debug logging (default: false)
 ```
 
-### Config File
-The server saves successful connections to `~/.qsys-mcp/last-connection.json` and auto-connects on next startup.
+### Persistent Configuration
+The server saves successful connections to `~/.qsys-mcp/last-connection.json` for convenience.
 
 ## Tools
 
-### qsys_connect
-Connect to Q-SYS Core with auto-reconnection and optional component filtering.
+All tools auto-connect using the `QSYS_HOST` environment variable if not already connected.
+
+### qsys_status
+Get connection and system status without triggering auto-connection.
 ```json
 {
-  "host": "192.168.1.100",
-  "port": 443,
-  "secure": true,
-  "pollingInterval": 350,
-  "filter": "^Audio"         // Optional: regex to filter components
+  "detailed": false    // Include component inventory
 }
 ```
 
 ### qsys_discover
-List components and controls with enhanced metadata.
+List components and controls. Auto-connects if needed.
 ```json
 {
   "component": "Gain.*",     // Optional regex filter
-  "includeControls": true    // Include control details with metadata
+  "includeControls": true    // Include control details
 }
 ```
 
 ### qsys_get
-Read control values with enhanced metadata.
+Read control values with metadata. Auto-connects if needed.
 ```json
 {
   "controls": ["Gain_1.gain", "Gain_1.mute"]
@@ -62,7 +60,7 @@ Read control values with enhanced metadata.
 ```
 
 ### qsys_set
-Update control values with validation.
+Update control values with validation. Auto-connects if needed.
 ```json
 {
   "controls": [
@@ -75,78 +73,36 @@ Update control values with validation.
 }
 ```
 
-### qsys_status
-Get connection and system status.
-```json
-{
-  "detailed": false    // Include component inventory
-}
-```
-
-### qsys_monitor
-Real-time control monitoring with event buffer.
-```json
-{
-  "action": "start",         // start, read, or stop
-  "id": "monitor_1",         // Unique monitor ID
-  "controls": ["Gain_1.gain", "Gain_1.mute"]
-}
-```
-
 ## Protected Controls
 
 These patterns require `force: true` to modify:
-- `Master.*` - System-wide master controls
+- `Master.*` - Master controls
 - `Emergency.*` - Emergency systems
 - `*.power` - Power controls
-- `SystemMute` - Venue-wide mute
+- `SystemMute` - System-wide mutes
 
-## Features
+## Core Features
 
-- **Real-time monitoring**: Subscribe to control changes with event buffer
-- **Component filtering**: Reduce memory usage by loading only needed components
-- **Enhanced metadata**: Control direction, choices, min/max values included
+- **Auto-connection**: Connects automatically using QSYS_HOST environment variable
 - **Auto-reconnection**: Exponential backoff (1s, 2s, 4s, 8s, 16s)
-- **Discovery cache**: 1-second cache for improved performance
+- **Discovery cache**: 1-second cache for performance
 - **Parallel operations**: Batch updates execute simultaneously
-- **Type validation**: Enforces correct types for Boolean, Float, Integer
-- **Range validation**: Respects ValueMin/ValueMax limits
-- **Helpful errors**: Suggests available components/controls when not found
+- **Type validation**: Enforces Boolean, Float, Integer types
+- **Range validation**: Respects min/max limits
+- **Helpful errors**: Suggests available components/controls
 
 ## Performance
 
-- Tool response: <10ms overhead
-- Memory usage: <50MB (reduced with filtering)
-- Startup time: <500ms
-- Connection time: <1 second
-- Monitor events: 100 event circular buffer
-- Batch operations: Parallel execution (100 get, 50 set)
+- Connection time: < 1 second
+- Memory usage: < 50MB typical
+- Startup time: < 500ms
+- Batch limits: 100 get, 50 set
 
 ## Claude Desktop Configuration
 
-Add to your Claude Desktop config file:
+Add to your Claude Desktop config:
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-### Option 1: Minimal Configuration (Manual Connect)
-Use this for flexibility with multiple Q-SYS systems:
-
-```json
-{
-  "mcpServers": {
-    "qsys-mcp3": {
-      "command": "node",
-      "args": ["/absolute/path/to/MCP3.0/index.js"]
-    }
-  }
-}
-```
-
-With this config, you'll need to connect manually in Claude:
-> "Connect to Q-SYS Core at 192.168.50.150"
-
-### Option 2: Auto-Connect Configuration
-Use this for dedicated single-system setups:
 
 ```json
 {
@@ -157,7 +113,6 @@ Use this for dedicated single-system setups:
       "env": {
         "QSYS_HOST": "192.168.50.150",
         "QSYS_PORT": "443",
-        "QSYS_AUTO_CONNECT": "true",
         "QSYS_MCP_DEBUG": "false"
       }
     }
@@ -165,26 +120,23 @@ Use this for dedicated single-system setups:
 }
 ```
 
-Replace `/absolute/path/to/MCP3.0/index.js` with the actual path to your index.js file.
+Replace `/absolute/path/to/MCP3.0/index.js` with your actual path.
 Replace `192.168.50.150` with your Q-SYS Core IP address.
 
 ## Testing
 
-Use `test-prompts-v2.md` for comprehensive testing, or quick checklist:
-1. Connect with/without component filter
-2. Verify auto-reconnection
-3. Test real-time monitoring (start/read/stop)
-4. Validate enhanced metadata (direction, choices, min/max)
-5. Test protected controls
-6. Verify batch operations
-7. Monitor memory usage
+Basic functionality test:
+```bash
+# Set your Q-SYS Core IP
+export QSYS_HOST=192.168.50.150
 
-## Agent Prompts
+# Run the server
+node index.js
 
-See `agent-mcp3-prompts.md` for example system prompts for:
-- AV Room Controller Assistant
-- Audio System Troubleshooting Agent
-- Event Production Coordinator
+# In another terminal, use the MCP inspector or test scripts
+```
+
+For comprehensive testing, see `test-prompts-v2.md`.
 
 ## License
 
