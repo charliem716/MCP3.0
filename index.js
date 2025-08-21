@@ -365,7 +365,9 @@ class QSysMCP3Server {
   }
 
   async toolDiscover({ component, includeControls = false } = {}) {
-    if (!this.qrwc) return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+    if (!this.qrwc || this.state.connection !== 'connected') {
+      return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+    }
     
     // Check cache (1 second TTL)
     if (this.cache.discovery && Date.now() - this.cache.timestamp < 1000) {
@@ -423,7 +425,9 @@ class QSysMCP3Server {
   }
 
   async toolGet({ controls }) {
-    if (!this.qrwc) return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+    if (!this.qrwc || this.state.connection !== 'connected') {
+      return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+    }
     
     const results = controls.map(path => {
       try {
@@ -455,7 +459,9 @@ class QSysMCP3Server {
   }
 
   async toolSet({ controls }) {
-    if (!this.qrwc) return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+    if (!this.qrwc || this.state.connection !== 'connected') {
+      return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+    }
     
     const updates = controls.map(async ({ path, value, force }) => {
       try {
@@ -541,7 +547,9 @@ class QSysMCP3Server {
 
   async toolMonitor({ action, id, controls }) {
     if (action === 'start') {
-      if (!this.qrwc) return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+      if (!this.qrwc || this.state.connection !== 'connected') {
+        return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+      }
       
       const updates = [];
       const listeners = [];
