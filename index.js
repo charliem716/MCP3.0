@@ -546,9 +546,17 @@ class QSysMCP3Server {
   }
 
   async toolMonitor({ action, id, controls }) {
+    if (!id || id === '') {
+      return this.error('Monitor ID cannot be empty', 'Provide a unique identifier for the monitor');
+    }
+    
     if (action === 'start') {
       if (!this.qrwc || this.state.connection !== 'connected') {
         return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+      }
+      
+      if (!controls || controls.length === 0) {
+        return this.error('No controls specified to monitor', 'Provide at least one control path');
       }
       
       const updates = [];
