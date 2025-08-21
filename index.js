@@ -22,6 +22,7 @@ class QSysMCP3Server {
     this.state = { connection: 'disconnected', host: null, reconnectAttempt: 0, connectedAt: null };
     this.cache = { discovery: null, timestamp: 0 };
     this.config = this.loadConfig();
+    this.connectingPromise = null;  // Track ongoing connection attempt
     
     this.server = new Server(
       { name: 'qsys-mcp3', version: '3.0.0' },
@@ -31,17 +32,7 @@ class QSysMCP3Server {
     this.setupHandlers();
     
     // Connect to stdio transport
-    this.server.connect(new StdioServerTransport()).then(() => {
-      // Auto-connect if configured
-      if (this.config.host && this.config.autoConnect !== false) {
-        this.connect(this.config).catch(error => {
-          if (process.env.QSYS_MCP_DEBUG === 'true') {
-            console.error('Auto-connect failed:', error.message);
-          }
-          // Don't crash, just continue without connection
-        });
-      }
-    });
+    this.server.connect(new StdioServerTransport());
   }
 
   loadConfig() {
@@ -87,6 +78,7 @@ class QSysMCP3Server {
     }
     
     if (this.qrwc) {
+      this.qrwc.removeAllListeners();  // Clean up event handlers
       try {
         this.qrwc.close();
       } catch (e) {
@@ -106,8 +98,19 @@ class QSysMCP3Server {
       );
       
       await new Promise((resolve, reject) => {
-        socket.once('open', resolve);
-        socket.once('error', reject);
+        const timeout = setTimeout(() => {
+          socket.terminate();
+          reject(new Error('Connection timeout after 10 seconds'));
+        }, 10000);
+        
+        socket.once('open', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        socket.once('error', (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
       });
       
       const options = { 
@@ -190,19 +193,30 @@ class QSysMCP3Server {
 
   // Tool implementations
   async ensureConnected() {
+    // Already connected
     if (this.state.connection === 'connected' && this.qrwc) return;
+    
+    // Connection in progress - wait for it
+    if (this.connectingPromise) return await this.connectingPromise;
     
     const host = process.env.QSYS_HOST || this.config.host;
     if (!host) {
       throw new Error('QSYS_HOST environment variable required');
     }
     
-    await this.connect({
+    // Start new connection
+    this.connectingPromise = this.connect({
       host,
       port: parseInt(process.env.QSYS_PORT || this.config.port || 443),
       secure: process.env.QSYS_SECURE !== 'false',
       pollingInterval: parseInt(process.env.QSYS_POLLING_INTERVAL || this.config.pollingInterval || 350)
     });
+    
+    try {
+      await this.connectingPromise;
+    } finally {
+      this.connectingPromise = null;
+    }
   }
 
   async toolStatus({ detailed } = {}) {
@@ -220,8 +234,11 @@ class QSysMCP3Server {
       status.pollingInterval = this.config.pollingInterval;
       
       if (this.state.connectedAt) {
-        status.uptime = Date.now() - this.state.connectedAt.getTime();
+        status.uptime = Math.floor((Date.now() - this.state.connectedAt.getTime()) / 1000);
       }
+      
+      // Add memory usage
+      status.memoryUsage = process.memoryUsage();
       
       if (detailed) {
         status.components = components.map(([name, comp]) => ({
@@ -361,7 +378,7 @@ class QSysMCP3Server {
         // Read-only check
         const { Direction } = control.state;
         if (Direction === 'Read' || Direction === 'Read Only') {
-          return { control: path, error: 'Control is read-only and cannot be modified', confirmed: false };
+          return { control: path, error: 'Control is read-only and cannot be modified', success: false };
         }
         
         // Validation
@@ -405,7 +422,7 @@ class QSysMCP3Server {
               suggestion: 'Control may be read-only, locked, or require permissions',
               requested: value,
               actual: newState.Value,
-              confirmed: false
+              success: false
             };
           }
         }
@@ -415,15 +432,17 @@ class QSysMCP3Server {
           value: newState.Value,
           string: newState.String,
           position: newState.Position,
-          confirmed: true
+          success: true  // Changed from confirmed to success for consistency
         };
       } catch (error) {
-        return { control: path, error: error.message, confirmed: false };
+        return { control: path, error: error.message, success: false };
       }
     });
     
     const results = await Promise.allSettled(updates);
-    return this.success(results.map(r => r.status === 'fulfilled' ? r.value : r.reason));
+    return this.success({ 
+      results: results.map(r => r.status === 'fulfilled' ? r.value : r.reason) 
+    });
   }
 
 
