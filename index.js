@@ -431,9 +431,9 @@ class QSysMCP3Server {
           position: Position, 
           bool: Bool,
           direction: Direction,
-          choices: Choices,
-          min: ValueMin,
-          max: ValueMax
+          choices: Choices || null,
+          min: ValueMin !== undefined ? ValueMin : null,
+          max: ValueMax !== undefined ? ValueMax : null
         };
       } catch (error) {
         return { control: path, error: error.message };
@@ -458,6 +458,12 @@ class QSysMCP3Server {
         // Protection check
         if (!force && PROTECTED_PATTERNS.some(p => p.test(path))) {
           return { control: path, error: 'Protected control. Use force:true to override' };
+        }
+        
+        // Read-only check
+        const { Direction } = control.state;
+        if (Direction === 'Read' || Direction === 'Read Only') {
+          return { control: path, error: 'Control is read-only and cannot be modified', confirmed: false };
         }
         
         // Validation
