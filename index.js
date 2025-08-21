@@ -151,10 +151,10 @@ class QSysMCP3Server {
       
       this.qrwc = await Qrwc.createQrwc(options);
       
-      const componentsLoaded = Object.keys(this.qrwc.components).length;
+      const componentsLoaded = Object.keys(this.qrwc.components || {}).length;
       
-      // If no components match the filter, close and return error
-      if (filter && componentsLoaded === 0) {
+      // If no components loaded, there's a connection issue or empty design
+      if (componentsLoaded === 0) {
         // Give SDK time to clean up before closing
         await new Promise(r => setTimeout(r, 100));
         try {
@@ -162,7 +162,12 @@ class QSysMCP3Server {
         } catch {}
         this.qrwc = null;
         this.state.connection = 'disconnected';
-        throw new Error(`No components match filter pattern: "${filter}"`);
+        
+        if (filter) {
+          throw new Error(`No components match filter pattern: "${filter}"`);
+        } else {
+          throw new Error('No components found in Q-SYS design. Verify Core is running and has a design loaded');
+        }
       }
       
       this.state.connection = 'connected';
@@ -246,7 +251,13 @@ class QSysMCP3Server {
           filterApplied: !!this.state.filter
         });
       }
-      // If still not connected after timeout, fall through to try new connection
+      
+      // If still connecting after timeout, connection failed
+      if (this.state.connection === 'connecting') {
+        this.state.connection = 'disconnected';
+        return this.error('Connection timeout', 'Q-SYS Core did not respond within 10 seconds. Check network and Core status');
+      }
+      // Fall through to handle disconnected state
     }
     
     // If already connected, check if filter needs to change or host is different
