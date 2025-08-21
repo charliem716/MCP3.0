@@ -14,17 +14,14 @@ const CONFIG_DIR = path.join(os.homedir(), '.qsys-mcp');
 const LAST_CONNECTION_FILE = path.join(CONFIG_DIR, 'last-connection.json');
 const PROTECTED_PATTERNS = [/^Master\./i, /^Emergency\./i, /\.power$/i, /^SystemMute/i];
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
-const RESPONSE_DIR = path.join(os.tmpdir(), 'qsys-mcp-responses');
-const MAX_STDIO_SIZE = 100 * 1024; // 100KB threshold
-const FILE_CLEANUP_AGE = 15 * 60 * 1000; // Clean files older than 15 minutes
+const MAX_STDIO_SIZE = 1024 * 1024; // 1MB threshold for truncation
 
 class QSysMCP3Server {
   constructor() {
     this.qrwc = null;
-    this.state = { connection: 'disconnected', host: null, reconnectAttempt: 0, connectedAt: null, filter: null };
+    this.state = { connection: 'disconnected', host: null, reconnectAttempt: 0, connectedAt: null };
     this.cache = { discovery: null, timestamp: 0 };
     this.config = this.loadConfig();
-    this.monitors = new Map();
     
     this.server = new Server(
       { name: 'qsys-mcp3', version: '3.0.0' },
@@ -32,19 +29,6 @@ class QSysMCP3Server {
     );
     
     this.setupHandlers();
-    
-    // Ensure response directory exists
-    try {
-      fs.mkdirSync(RESPONSE_DIR, { recursive: true });
-      this.cleanupOldResponses(); // Clean on startup
-    } catch (error) {
-      console.error('Warning: Could not create response directory:', error);
-    }
-    
-    // Periodic cleanup every 5 minutes
-    setInterval(() => {
-      this.cleanupOldResponses();
-    }, 5 * 60 * 1000);
     
     // Connect to stdio transport
     this.server.connect(new StdioServerTransport()).then(() => {
@@ -94,7 +78,7 @@ class QSysMCP3Server {
     return config;
   }
 
-  async connect({ host, port = 443, secure = true, pollingInterval = 350, filter }) {
+  async connect({ host, port = 443, secure = true, pollingInterval = 350 }) {
     const startTime = Date.now();
     
     // Validate host parameter
@@ -112,7 +96,7 @@ class QSysMCP3Server {
     }
     
     // Reset reconnection state on manual connect
-    this.state = { connection: 'connecting', host, reconnectAttempt: 0, filter, connectedAt: null };
+    this.state = { connection: 'connecting', host, reconnectAttempt: 0, connectedAt: null };
     this.cache = { discovery: null, timestamp: 0 };
     
     try {
@@ -126,27 +110,9 @@ class QSysMCP3Server {
         socket.once('error', reject);
       });
       
-      // Create filter function with error handling
-      let componentFilter = undefined;
-      if (filter) {
-        try {
-          const filterRegex = new RegExp(filter, 'i');
-          componentFilter = (c) => {
-            try {
-              return filterRegex.test(c.Name);
-            } catch {
-              return false;
-            }
-          };
-        } catch (error) {
-          throw new Error(`Invalid filter pattern: ${error.message}`);
-        }
-      }
-      
       const options = { 
         socket, 
-        pollingInterval: Math.max(34, pollingInterval),
-        componentFilter
+        pollingInterval: Math.max(34, pollingInterval)
       };
       
       this.qrwc = await Qrwc.createQrwc(options);
@@ -163,11 +129,7 @@ class QSysMCP3Server {
         this.qrwc = null;
         this.state.connection = 'disconnected';
         
-        if (filter) {
-          throw new Error(`No components match filter pattern: "${filter}"`);
-        } else {
-          throw new Error('No components found in Q-SYS design. Verify Core is running and has a design loaded');
-        }
+        throw new Error('No components found in Q-SYS design. Verify Core is running and has a design loaded');
       }
       
       this.state.connection = 'connected';
@@ -185,11 +147,11 @@ class QSysMCP3Server {
       
       try {
         fs.mkdirSync(CONFIG_DIR, { recursive: true });
-        fs.writeFileSync(LAST_CONNECTION_FILE, JSON.stringify({ host, port, secure, pollingInterval, filter }, null, 2));
+        fs.writeFileSync(LAST_CONNECTION_FILE, JSON.stringify({ host, port, secure, pollingInterval }, null, 2));
       } catch {}
       
       const connectionTime = Date.now() - startTime;
-      return { connected: true, host, port, secure, pollingInterval: Math.max(34, pollingInterval), componentsLoaded, filterApplied: !!filter, connectionTime };
+      return { connected: true, host, port, secure, pollingInterval: Math.max(34, pollingInterval), componentsLoaded, connectionTime };
     } catch (error) {
       this.state.connection = 'disconnected';
       this.state.host = null;
@@ -201,7 +163,6 @@ class QSysMCP3Server {
     // Don't restart if already reconnecting
     if (this.state.connection === 'reconnecting') return;
     
-    const previousFilter = this.state.filter;
     this.state.connection = 'disconnected';
     this.qrwc = null;
     this.cache = { discovery: null, timestamp: 0 };
@@ -214,8 +175,7 @@ class QSysMCP3Server {
         try {
           await this.connect({ 
             ...this.config, 
-            host: this.state.host,
-            filter: previousFilter
+            host: this.state.host
           });
           this.state.reconnectAttempt = 0; // Reset on success
         } catch (error) {
@@ -229,105 +189,20 @@ class QSysMCP3Server {
   }
 
   // Tool implementations
-  async toolConnect(params = {}) {
-    // If currently connecting, wait for it to complete
-    if (this.state.connection === 'connecting') {
-      const timeout = 10000; // 10 seconds
-      const start = Date.now();
-      
-      while (this.state.connection === 'connecting' && Date.now() - start < timeout) {
-        await new Promise(r => setTimeout(r, 100));
-      }
-      
-      // Return result of the connection attempt
-      if (this.state.connection === 'connected') {
-        return this.success({ 
-          connected: true, 
-          host: this.state.host,
-          port: this.config.port,
-          secure: this.config.secure,
-          pollingInterval: this.config.pollingInterval,
-          componentsLoaded: Object.keys(this.qrwc?.components || {}).length,
-          filterApplied: !!this.state.filter
-        });
-      }
-      
-      // If still connecting after timeout, connection failed
-      if (this.state.connection === 'connecting') {
-        this.state.connection = 'disconnected';
-        return this.error('Connection timeout', 'Q-SYS Core did not respond within 10 seconds. Check network and Core status');
-      }
-      // Fall through to handle disconnected state
+  async ensureConnected() {
+    if (this.state.connection === 'connected' && this.qrwc) return;
+    
+    const host = process.env.QSYS_HOST || this.config.host;
+    if (!host) {
+      throw new Error('QSYS_HOST environment variable required');
     }
     
-    // If already connected, check if filter needs to change or host is different
-    if (this.state.connection === 'connected' && this.qrwc) {
-      // If host is different, need to reconnect
-      if (params.host && params.host !== this.state.host) {
-        try {
-          const mergedParams = {
-            port: this.config.port,
-            secure: this.config.secure,
-            pollingInterval: this.config.pollingInterval,
-            ...params
-          };
-          return this.success(await this.connect(mergedParams));
-        } catch (error) {
-          return this.error(error.message, 'Check host IP and ensure Q-SYS Core is accessible');
-        }
-      }
-      // If filter is different, need to reconnect
-      if (params.filter !== this.state.filter) {
-        // Disconnect and reconnect with new filter
-        try {
-          const mergedParams = {
-            port: this.config.port,
-            secure: this.config.secure,
-            pollingInterval: this.config.pollingInterval,
-            host: this.state.host,
-            ...params
-          };
-          return this.success(await this.connect(mergedParams));
-        } catch (error) {
-          return this.error(error.message, 'Check filter pattern and host connectivity');
-        }
-      }
-      // Otherwise return existing connection
-      return this.success({
-        connected: true,
-        host: this.state.host,
-        port: this.config.port,
-        secure: this.config.secure,
-        pollingInterval: this.config.pollingInterval,
-        componentsLoaded: Object.keys(this.qrwc.components).length,
-        filterApplied: !!this.state.filter
-      });
-    }
-    
-    // If no host provided, try to use saved config or return helpful error
-    if (!params.host) {
-      if (this.config.host) {
-        params.host = this.config.host;
-      } else {
-        return this.error(
-          'No host specified',
-          'Provide host IP address (e.g., { host: "192.168.1.100" })'
-        );
-      }
-    }
-    
-    try {
-      // Merge params with config defaults, params take precedence
-      const mergedParams = {
-        port: this.config.port,
-        secure: this.config.secure,
-        pollingInterval: this.config.pollingInterval,
-        ...params
-      };
-      return this.success(await this.connect(mergedParams));
-    } catch (error) {
-      return this.error(error.message, 'Check host IP and ensure Q-SYS Core is accessible');
-    }
+    await this.connect({
+      host,
+      port: parseInt(process.env.QSYS_PORT || this.config.port || 443),
+      secure: process.env.QSYS_SECURE !== 'false',
+      pollingInterval: parseInt(process.env.QSYS_POLLING_INTERVAL || this.config.pollingInterval || 350)
+    });
   }
 
   async toolStatus({ detailed } = {}) {
@@ -365,8 +240,10 @@ class QSysMCP3Server {
   }
 
   async toolDiscover({ component, includeControls = false } = {}) {
-    if (!this.qrwc || this.state.connection !== 'connected') {
-      return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+    try {
+      await this.ensureConnected();
+    } catch (error) {
+      return this.error(error.message, 'Check QSYS_HOST environment variable');
     }
     
     // Check cache (1 second TTL)
@@ -425,8 +302,10 @@ class QSysMCP3Server {
   }
 
   async toolGet({ controls }) {
-    if (!this.qrwc || this.state.connection !== 'connected') {
-      return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+    try {
+      await this.ensureConnected();
+    } catch (error) {
+      return this.error(error.message, 'Check QSYS_HOST environment variable');
     }
     
     const results = controls.map(path => {
@@ -459,8 +338,10 @@ class QSysMCP3Server {
   }
 
   async toolSet({ controls }) {
-    if (!this.qrwc || this.state.connection !== 'connected') {
-      return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
+    try {
+      await this.ensureConnected();
+    } catch (error) {
+      return this.error(error.message, 'Check QSYS_HOST environment variable');
     }
     
     const updates = controls.map(async ({ path, value, force }) => {
@@ -545,57 +426,6 @@ class QSysMCP3Server {
     return this.success(results.map(r => r.status === 'fulfilled' ? r.value : r.reason));
   }
 
-  async toolMonitor({ action, id, controls }) {
-    if (!id || id === '') {
-      return this.error('Monitor ID cannot be empty', 'Provide a unique identifier for the monitor');
-    }
-    
-    if (action === 'start') {
-      if (!this.qrwc || this.state.connection !== 'connected') {
-        return this.error('Not connected to Q-SYS Core', 'Use qsys_connect first');
-      }
-      
-      if (!controls || controls.length === 0) {
-        return this.error('No controls specified to monitor', 'Provide at least one control path');
-      }
-      
-      const updates = [];
-      const listeners = [];
-      
-      for (const path of controls) {
-        const [comp, ctrl] = this.parsePath(path);
-        const control = this.qrwc.components[comp]?.controls[ctrl];
-        if (!control) continue;
-        
-        const fn = (state) => {
-          updates.push({ path, ...state, time: Date.now() });
-          if (updates.length > 100) updates.shift();
-        };
-        control.on('update', fn);
-        listeners.push({ control, fn });
-      }
-      
-      this.monitors.set(id, { updates, listeners });
-      return this.success({ started: true, id, monitoring: listeners.length });
-    }
-    
-    if (action === 'read') {
-      const mon = this.monitors.get(id);
-      if (!mon) return this.error('Monitor not found', `Use action:'start' first with id:'${id}'`);
-      const events = mon.updates.splice(0);
-      return this.success({ events, count: events.length });
-    }
-    
-    if (action === 'stop') {
-      const mon = this.monitors.get(id);
-      if (!mon) return this.error('Monitor not found');
-      mon.listeners.forEach(({ control, fn }) => control.removeListener('update', fn));
-      this.monitors.delete(id);
-      return this.success({ stopped: true, id });
-    }
-    
-    return this.error('Invalid action', 'Use start, read, or stop');
-  }
 
   // Helpers
   parsePath(path) {
@@ -604,7 +434,7 @@ class QSysMCP3Server {
     return [path.slice(0, dot), path.slice(dot + 1)];
   }
 
-  getHelpfulError(path, componentName) {
+  getHelpfulError(_, componentName) {
     const component = this.qrwc?.components[componentName];
     
     if (!component) {
@@ -619,58 +449,15 @@ class QSysMCP3Server {
   success(data) {
     const json = JSON.stringify(data);
     
-    // Check if response exceeds safe stdio size
+    // Truncate if response exceeds 1MB
     if (json.length > MAX_STDIO_SIZE) {
-      return this.largeResponse(json, data);
+      const truncated = Array.isArray(data) 
+        ? { truncated: true, count: data.length, data: data.slice(0, 20) }
+        : { truncated: true, size: json.length, error: 'Response too large' };
+      return { content: [{ type: 'text', text: JSON.stringify(truncated) }] };
     }
     
-    // Normal response for small data
     return { content: [{ type: 'text', text: json }] };
-  }
-  
-  largeResponse(json, originalData) {
-    try {
-      // Generate unique filename with timestamp
-      const timestamp = Date.now();
-      const filename = `response-${timestamp}-${Math.random().toString(36).substr(2, 9)}.json`;
-      const filepath = path.join(RESPONSE_DIR, filename);
-      
-      // Write to file atomically (write to temp, then rename)
-      const tempPath = filepath + '.tmp';
-      fs.writeFileSync(tempPath, json);
-      fs.renameSync(tempPath, filepath);
-      
-      // Return file reference with metadata
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            largeResponse: true,
-            file: filepath,
-            size: json.length,
-            sizeHuman: this.formatBytes(json.length),
-            created: new Date().toISOString(),
-            expiresIn: '15 minutes',
-            summary: this.generateSummary(originalData)
-          })
-        }]
-      };
-    } catch (error) {
-      // Fallback: Return truncated data with error
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            error: 'Could not write large response to file',
-            details: error.message,
-            truncated: true,
-            data: Array.isArray(originalData) 
-              ? originalData.slice(0, 20) 
-              : { error: 'Response too large' }
-          })
-        }]
-      };
-    }
   }
 
   error(message, suggestion) {
@@ -678,58 +465,6 @@ class QSysMCP3Server {
       content: [{ type: 'text', text: JSON.stringify({ error: message, suggestion }, null, 2) }],
       isError: true
     };
-  }
-  
-  formatBytes(bytes) {
-    if (bytes < 1024) return bytes + ' bytes';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  }
-  
-  generateSummary(data) {
-    if (Array.isArray(data)) {
-      return {
-        type: 'array',
-        length: data.length,
-        sample: data.slice(0, 3)
-      };
-    }
-    if (typeof data === 'object' && data !== null) {
-      const keys = Object.keys(data);
-      return {
-        type: 'object',
-        keys: keys.slice(0, 5),
-        totalKeys: keys.length
-      };
-    }
-    return { type: typeof data };
-  }
-  
-  cleanupOldResponses() {
-    try {
-      const now = Date.now();
-      const files = fs.readdirSync(RESPONSE_DIR);
-      
-      files.forEach(file => {
-        if (file.startsWith('response-') && file.endsWith('.json')) {
-          const filepath = path.join(RESPONSE_DIR, file);
-          const stats = fs.statSync(filepath);
-          
-          // Delete if older than cleanup age
-          if (now - stats.mtimeMs > FILE_CLEANUP_AGE) {
-            fs.unlinkSync(filepath);
-            if (process.env.QSYS_MCP_DEBUG === 'true') {
-              console.error(`Cleaned up old response file: ${file}`);
-            }
-          }
-        }
-      });
-    } catch (error) {
-      // Non-critical, just log if debug
-      if (process.env.QSYS_MCP_DEBUG === 'true') {
-        console.error('Cleanup error:', error);
-      }
-    }
   }
 
   setupHandlers() {
@@ -742,12 +477,10 @@ class QSysMCP3Server {
       }
       
       const tools = {
-        qsys_connect: () => this.toolConnect(args),
         qsys_status: () => this.toolStatus(args),
         qsys_discover: () => this.toolDiscover(args),
         qsys_get: () => this.toolGet(args),
-        qsys_set: () => this.toolSet(args),
-        qsys_monitor: () => this.toolMonitor(args)
+        qsys_set: () => this.toolSet(args)
       };
       
       try {
@@ -769,31 +502,8 @@ class QSysMCP3Server {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         {
-          name: 'qsys_connect',
-          description: 'Connect to Q-SYS Core or return existing connection. Reconnects if host/filter changes.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              host: { type: 'string', description: 'IP address or hostname of Q-SYS Core' },
-              port: { type: 'number', description: 'WebSocket port (default: 443)', default: 443 },
-              secure: { type: 'boolean', description: 'Use secure WebSocket (wss://)', default: true },
-              pollingInterval: { 
-                type: 'number', 
-                description: 'Control polling interval in ms (min: 34, default: 350)',
-                minimum: 34, 
-                default: 350 
-              },
-              filter: {
-                type: 'string',
-                description: 'Regex to filter components (e.g. "^Audio" for audio only)'
-              }
-            },
-            required: ['host']
-          }
-        },
-        {
           name: 'qsys_discover',
-          description: 'Discover available components and their controls',
+          description: 'Discover available components and their controls. Auto-connects if needed using QSYS_HOST env var.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -808,7 +518,7 @@ class QSysMCP3Server {
         },
         {
           name: 'qsys_get',
-          description: 'Get current values from controls',
+          description: 'Get current values from controls. Auto-connects if needed using QSYS_HOST env var.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -825,7 +535,7 @@ class QSysMCP3Server {
         },
         {
           name: 'qsys_set',
-          description: 'Set control values',
+          description: 'Set control values. Auto-connects if needed using QSYS_HOST env var.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -854,36 +564,12 @@ class QSysMCP3Server {
         },
         {
           name: 'qsys_status',
-          description: 'Get connection status and system information',
+          description: 'Get connection status and system information. Shows current connection state without auto-connecting.',
           inputSchema: {
             type: 'object',
             properties: {
               detailed: { type: 'boolean', description: 'Include component inventory', default: false }
             }
-          }
-        },
-        {
-          name: 'qsys_monitor',
-          description: 'Monitor control changes in real-time',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              action: { 
-                type: 'string', 
-                enum: ['start', 'read', 'stop'],
-                description: 'Monitor action: start monitoring, read events, or stop'
-              },
-              id: { 
-                type: 'string', 
-                description: 'Unique monitor identifier'
-              },
-              controls: { 
-                type: 'array',
-                description: 'Control paths to monitor (only for start action)',
-                items: { type: 'string' }
-              }
-            },
-            required: ['action', 'id']
           }
         }
       ]
@@ -892,17 +578,5 @@ class QSysMCP3Server {
 }
 
 // Start server
-const server = new QSysMCP3Server();
+new QSysMCP3Server();
 
-// Cleanup on exit
-process.on('exit', () => {
-  try {
-    // Clean all response files on exit
-    const files = fs.readdirSync(RESPONSE_DIR);
-    files.forEach(file => {
-      if (file.startsWith('response-')) {
-        fs.unlinkSync(path.join(RESPONSE_DIR, file));
-      }
-    });
-  } catch {}
-});
