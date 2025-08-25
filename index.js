@@ -23,6 +23,7 @@ class QSysMCP3Server {
     this.cache = { discovery: null, timestamp: 0 };
     this.config = this.loadConfig();
     this.connectingPromise = null;  // Track ongoing connection attempt
+    this.recording = null;  // Track active recording: { startTime, duration, file, stream, listener, count, filter }
     
     this.server = new Server(
       { name: 'qsys-mcp3', version: '3.0.0' },
@@ -163,6 +164,14 @@ class QSysMCP3Server {
   }
 
   handleDisconnect() {
+    // Stop any active recording before disconnect
+    if (this.recording) {
+      const summary = this.stopRecording();
+      if (process.env.QSYS_MCP_DEBUG === 'true') {
+        console.error('Recording stopped due to disconnect:', summary);
+      }
+    }
+    
     // Don't restart if already reconnecting
     if (this.state.connection === 'reconnecting') return;
     
@@ -251,6 +260,21 @@ class QSysMCP3Server {
     
     if (this.state.reconnectAttempt > 0) {
       status.reconnectAttempt = this.state.reconnectAttempt;
+    }
+    
+    // Add recording status if active
+    if (this.recording) {
+      const elapsed = (Date.now() - this.recording.startTime) / 1000;
+      const remaining = (this.recording.duration / 1000) - elapsed;
+      
+      status.recording = {
+        active: true,
+        elapsed: Math.round(elapsed * 10) / 10,
+        remaining: Math.max(0, Math.round(remaining * 10) / 10),
+        eventsRecorded: this.recording.count,
+        eventsPerSecond: Math.round(this.recording.count / elapsed),
+        file: this.recording.file
+      };
     }
     
     return this.success(status);
@@ -445,6 +469,96 @@ class QSysMCP3Server {
     });
   }
 
+  async toolAnalyze({ duration = 60, filename, filter } = {}) {
+    // Validate duration
+    if (duration < 1 || duration > 300) {
+      return this.error('Duration must be between 1 and 300 seconds');
+    }
+    
+    try {
+      await this.ensureConnected();
+    } catch (error) {
+      return this.error(error.message, 'Check QSYS_HOST environment variable');
+    }
+    
+    // Stop any existing recording
+    if (this.recording) {
+      this.stopRecording();
+    }
+    
+    // Setup CSV file
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const csvFile = filename || `qsys-analysis-${timestamp}.csv`;
+    const fullPath = path.join('/tmp', csvFile);
+    
+    // Create CSV with headers
+    const headers = 'timestamp,elapsed_ms,component,control,value,string,position,bool,min,max\n';
+    fs.writeFileSync(fullPath, headers);
+    
+    // Setup recording state
+    const startTime = Date.now();
+    this.recording = {
+      startTime,
+      duration: duration * 1000,
+      file: fullPath,
+      filter: filter ? new RegExp(filter) : null,
+      count: 0,
+      stream: fs.createWriteStream(fullPath, { flags: 'a' })
+    };
+    
+    // Attach global listener for all control updates
+    const recordingListener = (component, control, state) => {
+      if (!this.recording) return;
+      
+      const controlPath = `${component.name}.${control.name}`;
+      
+      // Apply filter if specified
+      if (this.recording.filter && !this.recording.filter.test(controlPath)) {
+        return;
+      }
+      
+      // Build CSV row
+      const now = Date.now();
+      const elapsed = now - this.recording.startTime;
+      
+      const row = [
+        now,                           // timestamp (epoch ms)
+        elapsed,                       // elapsed_ms from start
+        component.name,                // component name
+        control.name,                  // control name
+        state.Value ?? '',             // numeric value
+        `"${(state.String || '').replace(/"/g, '""')}"`,  // string (escaped)
+        state.Position ?? '',          // position (0-1)
+        state.Bool ?? '',              // boolean
+        state.ValueMin ?? '',          // min range
+        state.ValueMax ?? ''           // max range
+      ].join(',') + '\n';
+      
+      this.recording.stream.write(row);
+      this.recording.count++;
+    };
+    
+    // Start recording
+    this.qrwc.on('update', recordingListener);
+    this.recording.listener = recordingListener;
+    
+    // Schedule auto-stop
+    setTimeout(() => {
+      this.stopRecording();
+    }, duration * 1000);
+    
+    // Return recording status
+    return this.success({
+      status: 'recording',
+      file: fullPath,
+      duration: duration,
+      componentsMonitored: Object.keys(this.qrwc.components).length,
+      controlsMonitored: Object.values(this.qrwc.components)
+        .reduce((sum, c) => sum + Object.keys(c.controls).length, 0),
+      filter: filter || 'none',
+      message: `Recording for ${duration} seconds. Use qsys_status to check progress.`
+    });
+  }
 
   // Helpers
   parsePath(path) {
@@ -486,6 +600,37 @@ class QSysMCP3Server {
     };
   }
 
+  stopRecording() {
+    if (!this.recording) return null;
+    
+    // Remove listener
+    if (this.recording.listener && this.qrwc) {
+      this.qrwc.removeListener('update', this.recording.listener);
+    }
+    
+    // Close file stream
+    if (this.recording.stream) {
+      this.recording.stream.end();
+    }
+    
+    // Calculate summary
+    const elapsed = (Date.now() - this.recording.startTime) / 1000;
+    const summary = {
+      file: this.recording.file,
+      duration: elapsed,
+      eventsRecorded: this.recording.count,
+      eventsPerSecond: Math.round(this.recording.count / elapsed)
+    };
+    
+    this.recording = null;
+    
+    if (process.env.QSYS_MCP_DEBUG === 'true') {
+      console.error('Recording stopped:', summary);
+    }
+    
+    return summary;
+  }
+
   setupHandlers() {
     // Tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -499,7 +644,8 @@ class QSysMCP3Server {
         qsys_status: () => this.toolStatus(args),
         qsys_discover: () => this.toolDiscover(args),
         qsys_get: () => this.toolGet(args),
-        qsys_set: () => this.toolSet(args)
+        qsys_set: () => this.toolSet(args),
+        qsys_analyze: () => this.toolAnalyze(args)
       };
       
       try {
@@ -588,6 +734,30 @@ class QSysMCP3Server {
             type: 'object',
             properties: {
               detailed: { type: 'boolean', description: 'Include component inventory', default: false }
+            }
+          }
+        },
+        {
+          name: 'qsys_analyze',
+          description: 'Record all control changes to CSV for time-series analysis. Auto-connects if needed using QSYS_HOST env var.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              duration: {
+                type: 'number',
+                description: 'Recording duration in seconds (1-300)',
+                minimum: 1,
+                maximum: 300,
+                default: 60
+              },
+              filename: {
+                type: 'string',
+                description: 'Output CSV filename (default: qsys-analysis-{timestamp}.csv)'
+              },
+              filter: {
+                type: 'string',
+                description: 'Optional regex to filter controls (e.g., ".*meter.*|.*gain.*")'
+              }
             }
           }
         }
