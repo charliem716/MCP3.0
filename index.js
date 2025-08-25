@@ -15,6 +15,7 @@ const LAST_CONNECTION_FILE = path.join(CONFIG_DIR, 'last-connection.json');
 const PROTECTED_PATTERNS = [/^Master\./i, /^Emergency\./i, /\.power$/i, /^SystemMute/i];
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
 const MAX_STDIO_SIZE = 1024 * 1024; // 1MB threshold for truncation
+const MAX_RECORDING_LINES = 1900; // Conservative limit for Read tool (ensures <2000 with header)
 
 class QSysMCP3Server {
   constructor() {
@@ -503,17 +504,36 @@ class QSysMCP3Server {
       file: fullPath,
       filter: filter ? new RegExp(filter) : null,
       count: 0,
-      stream: fs.createWriteStream(fullPath, { flags: 'a' })
+      stream: fs.createWriteStream(fullPath, { flags: 'a' }),
+      autoStopped: false,
+      maxLines: MAX_RECORDING_LINES
     };
     
     // Attach global listener for all control updates
     const recordingListener = (component, control, state) => {
-      if (!this.recording) return;
+      // Check if recording exists and is not stopping
+      if (!this.recording || this.recording.stopping) return;
       
       const controlPath = `${component.name}.${control.name}`;
       
       // Apply filter if specified
       if (this.recording.filter && !this.recording.filter.test(controlPath)) {
+        return;
+      }
+      
+      // Check line limit before writing
+      if (this.recording.count >= this.recording.maxLines - 1) {
+        // Mark as stopping to prevent further writes
+        if (!this.recording.stopping) {
+          this.recording.stopping = true;
+          this.recording.autoStopped = true;
+          const elapsed = (Date.now() - this.recording.startTime) / 1000;
+          if (process.env.QSYS_MCP_DEBUG === 'true') {
+            console.error(`Recording auto-stopped at ${this.recording.count} events after ${elapsed.toFixed(1)}s`);
+          }
+          // Stop on next tick
+          process.nextTick(() => this.stopRecording());
+        }
         return;
       }
       
@@ -542,9 +562,11 @@ class QSysMCP3Server {
     this.qrwc.on('update', recordingListener);
     this.recording.listener = recordingListener;
     
-    // Schedule auto-stop
+    // Schedule auto-stop (if not already stopped by line limit)
     setTimeout(() => {
-      this.stopRecording();
+      if (this.recording) {
+        this.stopRecording();
+      }
     }, duration * 1000);
     
     // Return recording status
@@ -552,11 +574,19 @@ class QSysMCP3Server {
       status: 'recording',
       file: fullPath,
       duration: duration,
+      maxLines: MAX_RECORDING_LINES,
       componentsMonitored: Object.keys(this.qrwc.components).length,
       controlsMonitored: Object.values(this.qrwc.components)
         .reduce((sum, c) => sum + Object.keys(c.controls).length, 0),
       filter: filter || 'none',
-      message: `Recording for ${duration} seconds. Use qsys_status to check progress.`
+      message: `Recording up to ${MAX_RECORDING_LINES} lines (Read tool limit) or ${duration} seconds. Use qsys_status to check progress.`,
+      guidance: {
+        fullSystem: '~2-3 seconds before line limit',
+        metersOnly: '~10 seconds with filter ".*meter.*"',
+        gainsOnly: '~25 seconds with filter ".*gain.*"',
+        singleComponent: '~2-5 minutes with filter "ComponentName.*"',
+        note: 'File will auto-stop at 2000 lines to ensure Read tool compatibility'
+      }
     });
   }
 
@@ -621,6 +651,16 @@ class QSysMCP3Server {
       eventsRecorded: this.recording.count,
       eventsPerSecond: Math.round(this.recording.count / elapsed)
     };
+    
+    // Add auto-stop information if applicable
+    if (this.recording.autoStopped) {
+      summary.stoppedReason = `Reached ${MAX_RECORDING_LINES} line limit for Read tool compatibility`;
+      summary.actualDuration = elapsed;
+      summary.requestedDuration = this.recording.duration / 1000;
+      summary.note = this.recording.filter ? 
+        'Recording limit reached. For longer analysis, use more selective filters.' :
+        'Full system recording limited to ~2-3 seconds. Use filters for longer recordings.';
+    }
     
     this.recording = null;
     
