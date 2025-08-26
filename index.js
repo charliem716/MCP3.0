@@ -15,7 +15,7 @@ const LAST_CONNECTION_FILE = path.join(CONFIG_DIR, 'last-connection.json');
 const PROTECTED_PATTERNS = [/^Master\./i, /^Emergency\./i, /\.power$/i, /^SystemMute/i];
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
 const MAX_STDIO_SIZE = 1024 * 1024; // 1MB threshold for truncation
-const MAX_RECORDING_LINES = 1900; // Conservative limit for Read tool (ensures <2000 with header)
+const MAX_RECORDING_SIZE = 600000; // 600KB limit for CSV recordings
 
 class QSysMCP3Server {
   constructor() {
@@ -273,7 +273,7 @@ class QSysMCP3Server {
         elapsed: Math.round(elapsed * 10) / 10,
         remaining: Math.max(0, Math.round(remaining * 10) / 10),
         eventsRecorded: this.recording.count,
-        eventsPerSecond: Math.round(this.recording.count / elapsed),
+        bytesWritten: this.recording.bytesWritten,
         file: this.recording.file
       };
     }
@@ -470,7 +470,7 @@ class QSysMCP3Server {
     });
   }
 
-  async toolAnalyze({ duration = 60, filename, filter } = {}) {
+  async toolRecordControls({ duration = 60, filename, filter } = {}) {
     // Validate duration
     if (duration < 1 || duration > 300) {
       return this.error('Duration must be between 1 and 300 seconds');
@@ -489,7 +489,7 @@ class QSysMCP3Server {
     
     // Setup CSV file
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const csvFile = filename || `qsys-analysis-${timestamp}.csv`;
+    const csvFile = filename || `control-recording-${timestamp}.csv`;
     const fullPath = path.join('/tmp', csvFile);
     
     // Create CSV with headers
@@ -504,14 +504,15 @@ class QSysMCP3Server {
       file: fullPath,
       filter: filter ? new RegExp(filter) : null,
       count: 0,
+      csvRows: [headers],
+      bytesWritten: headers.length,
+      maxSize: MAX_RECORDING_SIZE,
       stream: fs.createWriteStream(fullPath, { flags: 'a' }),
-      autoStopped: false,
-      maxLines: MAX_RECORDING_LINES
+      autoStopped: false
     };
     
     // Attach global listener for all control updates
     const recordingListener = (component, control, state) => {
-      // Check if recording exists and is not stopping
       if (!this.recording || this.recording.stopping) return;
       
       const controlPath = `${component.name}.${control.name}`;
@@ -521,40 +522,40 @@ class QSysMCP3Server {
         return;
       }
       
-      // Check line limit before writing
-      if (this.recording.count >= this.recording.maxLines - 1) {
-        // Mark as stopping to prevent further writes
-        if (!this.recording.stopping) {
-          this.recording.stopping = true;
-          this.recording.autoStopped = true;
-          const elapsed = (Date.now() - this.recording.startTime) / 1000;
-          if (process.env.QSYS_MCP_DEBUG === 'true') {
-            console.error(`Recording auto-stopped at ${this.recording.count} events after ${elapsed.toFixed(1)}s`);
-          }
-          // Stop on next tick
-          process.nextTick(() => this.stopRecording());
-        }
-        return;
-      }
-      
       // Build CSV row
       const now = Date.now();
       const elapsed = now - this.recording.startTime;
       
       const row = [
-        now,                           // timestamp (epoch ms)
-        elapsed,                       // elapsed_ms from start
-        component.name,                // component name
-        control.name,                  // control name
-        state.Value ?? '',             // numeric value
-        `"${(state.String || '').replace(/"/g, '""')}"`,  // string (escaped)
-        state.Position ?? '',          // position (0-1)
-        state.Bool ?? '',              // boolean
-        state.ValueMin ?? '',          // min range
-        state.ValueMax ?? ''           // max range
+        now,
+        elapsed,
+        component.name,
+        control.name,
+        state.Value ?? '',
+        `"${(state.String || '').replace(/"/g, '""')}"`,
+        state.Position ?? '',
+        state.Bool ?? '',
+        state.ValueMin ?? '',
+        state.ValueMax ?? ''
       ].join(',') + '\n';
       
+      // Check size limit before adding
+      if (this.recording.bytesWritten + row.length > this.recording.maxSize) {
+        if (!this.recording.stopping) {
+          this.recording.stopping = true;
+          this.recording.autoStopped = true;
+          if (process.env.QSYS_MCP_DEBUG === 'true') {
+            console.error(`Recording auto-stopped at 600KB limit after ${((Date.now() - this.recording.startTime) / 1000).toFixed(1)}s`);
+          }
+          process.nextTick(() => this.stopRecording());
+        }
+        return;
+      }
+      
+      // Write and store
       this.recording.stream.write(row);
+      this.recording.csvRows.push(row);
+      this.recording.bytesWritten += row.length;
       this.recording.count++;
     };
     
@@ -562,31 +563,49 @@ class QSysMCP3Server {
     this.qrwc.on('update', recordingListener);
     this.recording.listener = recordingListener;
     
-    // Schedule auto-stop (if not already stopped by line limit)
-    setTimeout(() => {
-      if (this.recording) {
-        this.stopRecording();
-      }
-    }, duration * 1000);
-    
-    // Return recording status
-    return this.success({
-      status: 'recording',
-      file: fullPath,
-      duration: duration,
-      maxLines: MAX_RECORDING_LINES,
-      componentsMonitored: Object.keys(this.qrwc.components).length,
-      controlsMonitored: Object.values(this.qrwc.components)
-        .reduce((sum, c) => sum + Object.keys(c.controls).length, 0),
-      filter: filter || 'none',
-      message: `Recording up to ${MAX_RECORDING_LINES} lines (Read tool limit) or ${duration} seconds. Use qsys_status to check progress.`,
-      guidance: {
-        fullSystem: '~2-3 seconds before line limit',
-        metersOnly: '~10 seconds with filter ".*meter.*"',
-        gainsOnly: '~25 seconds with filter ".*gain.*"',
-        singleComponent: '~2-5 minutes with filter "ComponentName.*"',
-        note: 'File will auto-stop at 2000 lines to ensure Read tool compatibility'
-      }
+    // Wait for recording to complete
+    return new Promise((resolve) => {
+      // Normal completion timer
+      const timer = setTimeout(() => {
+        if (this.recording) {
+          const csvData = this.recording.csvRows.join('');
+          const summary = this.stopRecording();
+          
+          resolve(this.success({
+            status: 'recording_complete',
+            duration: summary.duration,
+            eventsRecorded: summary.eventsRecorded,
+            fileSize: csvData.length,
+            file: summary.file,
+            filter: filter || 'none',
+            csvData: csvData,
+            message: `Recording completed after ${duration} seconds`
+          }));
+        }
+      }, duration * 1000);
+      
+      // Check for auto-stop due to size limit
+      const checkStop = setInterval(() => {
+        if (this.recording?.autoStopped) {
+          clearTimeout(timer);
+          clearInterval(checkStop);
+          
+          const csvData = this.recording.csvRows.join('');
+          const summary = this.stopRecording();
+          
+          resolve(this.success({
+            status: 'recording_complete',
+            duration: summary.duration,
+            eventsRecorded: summary.eventsRecorded,
+            fileSize: csvData.length,
+            file: summary.file,
+            filter: filter || 'none',
+            autoStopped: true,
+            csvData: csvData,
+            message: `Recording auto-stopped at 600KB after ${summary.duration.toFixed(1)}s`
+          }));
+        }
+      }, 100);
     });
   }
 
@@ -649,18 +668,9 @@ class QSysMCP3Server {
       file: this.recording.file,
       duration: elapsed,
       eventsRecorded: this.recording.count,
-      eventsPerSecond: Math.round(this.recording.count / elapsed)
+      eventsPerSecond: Math.round(this.recording.count / elapsed),
+      autoStopped: this.recording.autoStopped || false
     };
-    
-    // Add auto-stop information if applicable
-    if (this.recording.autoStopped) {
-      summary.stoppedReason = `Reached ${MAX_RECORDING_LINES} line limit for Read tool compatibility`;
-      summary.actualDuration = elapsed;
-      summary.requestedDuration = this.recording.duration / 1000;
-      summary.note = this.recording.filter ? 
-        'Recording limit reached. For longer analysis, use more selective filters.' :
-        'Full system recording limited to ~2-3 seconds. Use filters for longer recordings.';
-    }
     
     this.recording = null;
     
@@ -685,7 +695,7 @@ class QSysMCP3Server {
         qsys_discover: () => this.toolDiscover(args),
         qsys_get: () => this.toolGet(args),
         qsys_set: () => this.toolSet(args),
-        qsys_analyze: () => this.toolAnalyze(args)
+        qsys_record_controls: () => this.toolRecordControls(args)
       };
       
       try {
@@ -778,8 +788,8 @@ class QSysMCP3Server {
           }
         },
         {
-          name: 'qsys_analyze',
-          description: 'Record all control changes to CSV for time-series analysis. Auto-connects if needed using QSYS_HOST env var.',
+          name: 'qsys_record_controls',
+          description: 'Record control changes to CSV for time-series analysis (max 600KB). Auto-connects if needed.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -792,11 +802,11 @@ class QSysMCP3Server {
               },
               filename: {
                 type: 'string',
-                description: 'Output CSV filename (default: qsys-analysis-{timestamp}.csv)'
+                description: 'Output CSV filename (default: control-recording-{timestamp}.csv)'
               },
               filter: {
                 type: 'string',
-                description: 'Optional regex to filter controls (e.g., ".*meter.*|.*gain.*")'
+                description: 'Regex to select specific controls (e.g., ".*meter.*" for meters, ".*gain.*" for gains)'
               }
             }
           }
